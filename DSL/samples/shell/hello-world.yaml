@@ -1,0 +1,5 @@
+# Hello-world shell job — runs every 10 minutes.
+hello_world:
+  trigger: "0 */10 * * * ?"
+  type: exec
+  command: ./scripts/samples/hello.sh

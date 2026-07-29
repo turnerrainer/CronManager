@@ -1,0 +1,9 @@
+# POST request example with retry.
+trigger_webhook:
+  trigger: "0 0 * * * ?"
+  type: http
+  method: POST
+  url: https://httpbin.org/post
+  retryCount: 3
+  retryDelay: 2000
+  ignoreFailures: true

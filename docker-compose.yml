@@ -1,0 +1,72 @@
+# Production-hardened compose file for CronManager-on-Rust.
+# See STANDARDS.md §9 for the security posture rationale.
+services:
+  timescaledb:
+    image: timescale/timescaledb:2.17.2-pg16
+    container_name: cronmanager-timescaledb
+    environment:
+      POSTGRES_DB: cronmanager
+      POSTGRES_USER: cronmanager
+      POSTGRES_PASSWORD: ${CRONMANAGER_DB_PASSWORD:-cronmanager_password}
+      TZ: Europe/Tallinn
+    ports:
+      - "5432:5432"
+    volumes:
+      - cronmanager-db:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cronmanager -d cronmanager"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  cronmanager-on-rust:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cronmanager-on-rust:0.1.0-rc.1
+    container_name: cronmanager-on-rust
+    ports:
+      - "9010:8080"
+    # The image ships cronmanager.yaml + DSL/ + scripts/ baked in
+    # as the demo. Override any of those with bind mounts:
+    #
+    # volumes:
+    #   - ./cronmanager.yaml:/app/cronmanager.yaml:ro
+    #   - ./DSL:/app/DSL:ro              # your own YAML jobs
+    #   - ./scripts:/app/scripts:ro      # your own shell scripts
+    environment:
+      RUST_LOG: info
+      CRONMANAGER_DB_PASSWORD: ${CRONMANAGER_DB_PASSWORD:-cronmanager_password}
+      CRONMANAGER_DATABASE_URL: >-
+        postgres://cronmanager:${CRONMANAGER_DB_PASSWORD:-cronmanager_password}@timescaledb:5432/cronmanager
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    restart: unless-stopped
+    # Not read-only: shell jobs may write to /tmp. If your DSLs
+    # never launch shell jobs, override this compose file with
+    # `read_only: true` to tighten further.
+    tmpfs:
+      - /tmp:size=64M
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 512M
+        reservations:
+          memory: 128M
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  cronmanager-db:
+    name: cronmanager-timescaledb-data

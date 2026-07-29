@@ -1,0 +1,14 @@
+target/
+target-local/
+book/book/
+.git/
+.github/
+.claude/
+tests/
+tasks/
+docs/
+book/
+*.log
+.env
+.env.local
+.sqlx/

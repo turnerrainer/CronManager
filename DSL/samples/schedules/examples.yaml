@@ -1,0 +1,32 @@
+# Schedule pattern reference. Every job here hits httpbin.org,
+# which is safe to hammer at the frequencies listed.
+
+# Every 30 seconds.
+every_30_seconds:
+  trigger: "*/30 * * * * ?"
+  type: http
+  method: GET
+  url: https://httpbin.org/get
+  retryCount: 2
+  ignoreFailures: true
+
+# Hourly at minute 0.
+hourly:
+  trigger: "0 0 * * * ?"
+  type: http
+  method: GET
+  url: https://httpbin.org/get
+
+# Every weekday at 9 AM.
+weekday_morning:
+  trigger: "0 0 9 ? * MON-FRI"
+  type: http
+  method: GET
+  url: https://httpbin.org/get
+
+# Twice daily (6 AM and 6 PM).
+twice_daily:
+  trigger: "0 0 6,18 * * ?"
+  type: http
+  method: GET
+  url: https://httpbin.org/get

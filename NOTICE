@@ -1,0 +1,11 @@
+CronManager-on-Rust
+Copyright 2026 Rainer Türner
+
+This product is a Rust reimplementation of CronManager, originally
+developed at the Information System Authority of Estonia
+(Riigi Infosüsteemi Amet, RIA) as part of the Bürokratt project
+(https://github.com/buerokratt/CronManager).
+
+Portions of the domain design, YAML DSL, and REST surface are
+faithful reproductions of the original JVM implementation and
+carry its Apache-2.0 heritage.

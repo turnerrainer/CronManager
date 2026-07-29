@@ -1,0 +1,32 @@
+/* Light-on-white theme tweaks — matches Apache Arrow / XTR-on-Rust
+   convention. Registered via additional-css in book.toml. */
+
+:root {
+  --sidebar-bg: #fafafa;
+  --sidebar-fg: #202224;
+  --sidebar-active: #0b74d1;
+}
+
+.chapter li a {
+  color: #1a1c1e;
+}
+.chapter li.chapter-item.active a {
+  color: var(--sidebar-active);
+  font-weight: 600;
+}
+
+pre code {
+  font-size: 0.92rem;
+}
+
+table {
+  border-collapse: collapse;
+  margin: 1rem 0;
+}
+table th, table td {
+  border: 1px solid #d0d3d7;
+  padding: 6px 10px;
+}
+table th {
+  background: #f2f4f7;
+}

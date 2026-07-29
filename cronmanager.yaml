@@ -1,0 +1,47 @@
+# CronManager default runtime config.
+#
+# Search order for this file:
+#   1. --config <path> CLI flag
+#   2. CRONMANAGER_CONFIG env var
+#   3. ./cronmanager.yaml or ./cronmanager.yml
+#   4. Built-in defaults if none found
+#
+# See book/src/configuration.md for the full field reference.
+
+port: 8080
+dsl_path: /app/DSL/samples
+app_root_path: /app
+
+# CORS: origin patterns that may call this API from a browser.
+# Empty list disables CORS entirely (server-to-server posture).
+allowed_origins:
+  - "http://localhost"
+  - "http://127.0.0.1"
+
+# Baseline environment exposed to shell jobs. Individual jobs must
+# still opt in via `allowedEnvs:` in their YAML — nothing here
+# leaks into a shell job automatically.
+shell_environment:
+  BACKUP_DIR: /tmp/backups
+  RETENTION_DAYS: "7"
+  TEMP_DIR: /tmp
+
+limits:
+  # Cap for inbound REST bodies (e.g. /execute POST params).
+  max_request_bytes: 1048576        # 1 MiB
+  # Cap for upstream HTTP response bodies captured into history.
+  max_response_bytes: 16777216      # 16 MiB
+  # Per-request HTTP outbound timeout (seconds).
+  request_timeout_secs: 30
+  # Per-shell-job maximum runtime (seconds). Overruns are killed.
+  shell_timeout_secs: 300
+
+# Job execution history storage. Absent → history is disabled
+# (jobs still run; nothing is persisted). Set to a Postgres /
+# TimescaleDB DSN to enable persistence. Password comes from an
+# env var named by `password_env`; a plain `password:` field is
+# NOT accepted — see DEV-REQUIREMENTS §5.2.
+#
+# database:
+#   url: "postgres://cronmanager@timescaledb:5432/cronmanager"
+#   password_env: CRONMANAGER_DB_PASSWORD

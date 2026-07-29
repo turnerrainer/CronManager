@@ -1,0 +1,6 @@
+# Manual-trigger example — no automatic schedule.
+manual_api_call:
+  trigger: off
+  type: http
+  method: GET
+  url: https://httpbin.org/uuid

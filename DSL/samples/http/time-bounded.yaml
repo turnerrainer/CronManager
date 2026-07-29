@@ -1,0 +1,8 @@
+# Time-bounded job — only runs between startDate and endDate.
+seasonal_check:
+  trigger: "0 0 9 * * ?"
+  type: http
+  method: GET
+  url: https://httpbin.org/get
+  startDate: 1704067200000
+  endDate: 1735689600000

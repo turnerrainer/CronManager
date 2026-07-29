@@ -1,0 +1,63 @@
+[package]
+name = "cronmanager-on-rust"
+version = "0.1.0-rc.1"
+edition = "2021"
+rust-version = "1.88"
+authors = ["Rainer Türner"]
+license = "Apache-2.0"
+description = "CronManager — Rust implementation. YAML-driven cron scheduler for HTTP + shell jobs."
+repository = "https://github.com/Buerostack/CronManager-on-Rust"
+
+[dependencies]
+# Web framework + async runtime
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+tower = { version = "0.4", features = ["util"] }
+tower-http = { version = "0.5", features = ["cors"] }
+
+# Serialisation
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+
+# HTTP client (native-tls keeps posture consistent with sibling
+# projects and avoids rustls feature-flag churn for a job runner
+# that mostly talks HTTPS to well-known targets).
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
+
+# Scheduling
+cron = "0.13"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+
+# Persistence (TimescaleDB via PostgreSQL). Runtime queries only —
+# no compile-time DB requirement.
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio-native-tls",
+    "postgres",
+    "macros",
+    "migrate",
+    "chrono",
+] }
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilities
+thiserror = "2"
+anyhow = "1"
+uuid = { version = "1", features = ["v4"] }
+async-trait = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+mockito = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }
+
+[[bin]]
+name = "cronmanager-on-rust"
+path = "src/main.rs"
+
+# Clippy posture — matches XTR-on-Rust and DEV-REQUIREMENTS §2.
+# `cargo clippy --all-targets -- -D warnings` is the CI gate.
+[lints.clippy]

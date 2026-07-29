@@ -1,0 +1,5 @@
+# Manual execution only — never fires on a schedule.
+manual_script:
+  trigger: off
+  type: exec
+  command: ./scripts/samples/hello.sh

@@ -1,0 +1,35 @@
+# cargo-audit configuration.
+#
+# Advisory IDs listed under `ignore` are downgraded to soft warnings
+# so `cargo audit --deny warnings` still passes. Every entry MUST
+# carry a rationale and a review date; unreviewed entries are a
+# code smell.
+#
+# NOTE: any exception here MUST be mirrored in `deny.toml`'s
+# `[advisories].ignore` — cargo-audit and cargo-deny do NOT share
+# this file. See STANDARDS.md §5.
+
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071 — Marvin timing sidechannel in the `rsa`
+    # crate (v0.9.x). No fixed release is available upstream as of
+    # the review date. Pulled in transitively by
+    # `sqlx-postgres` (SCRAM-SHA-256 auth path).
+    #
+    # Exposure model:
+    #   * CronManager talks to Postgres only from inside the
+    #     Docker network / trusted host — not across the public
+    #     internet.
+    #   * The vulnerability requires timing measurements against
+    #     the RSA operation performed during the SCRAM handshake.
+    #     A network attacker in a position to time the handshake
+    #     already has enough position to observe the credentials
+    #     directly.
+    #   * Mitigations available to the operator: run Postgres on
+    #     a private subnet, prefer trust/scram auth on the local
+    #     socket, or terminate DB TLS at a sidecar.
+    #
+    # Review: 2027-01-31 — re-check whether the `rsa` crate or
+    # sqlx has cut a fix. If neither, extend with a new note.
+    "RUSTSEC-2023-0071",
+]

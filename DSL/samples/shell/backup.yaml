@@ -1,0 +1,9 @@
+# Backup job — reads BACKUP_DIR + RETENTION_DAYS from
+# shell_environment via the allow-list.
+daily_backup:
+  trigger: "0 0 2 * * ?"
+  type: exec
+  command: ./scripts/samples/backup.sh
+  allowedEnvs:
+    - BACKUP_DIR
+    - RETENTION_DAYS

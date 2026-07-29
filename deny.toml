@@ -1,0 +1,78 @@
+# cargo-deny configuration. See STANDARDS.md §5.
+#
+# Complements cargo-audit (see .cargo/audit.toml) with three checks
+# audit does not cover:
+#
+#   1. licenses  — every dep's license is in the allow-list below
+#   2. bans      — no duplicate versions of security-sensitive crates
+#   3. sources   — every crate comes from crates.io (no unvetted git URLs)
+#
+# Enforced in CI via .github/workflows/security.yml.
+
+[graph]
+all-features = false
+no-default-features = false
+
+# -----------------------------------------------------------------
+# Advisories — cargo-deny has its OWN advisory reader; it does not
+# consult .cargo/audit.toml. Any exception documented for cargo-audit
+# must be mirrored here (same IDs, same rationale, same review date)
+# or cargo-deny will fail the check while cargo-audit passes.
+# -----------------------------------------------------------------
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+    # RUSTSEC-2023-0071 — mirrored from .cargo/audit.toml. See
+    # that file for the full rationale + review date.
+    { id = "RUSTSEC-2023-0071", reason = "Marvin sidechannel in rsa via sqlx-postgres SCRAM. No upstream fix. Review 2027-01-31." },
+]
+
+# -----------------------------------------------------------------
+# Licenses — allow-list. Anything not listed here fails the build.
+# -----------------------------------------------------------------
+[licenses]
+version = 2
+confidence-threshold = 0.9
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "MPL-2.0",
+    "CC0-1.0",
+    "0BSD",
+    "OpenSSL",
+]
+
+[[licenses.clarify]]
+name = "ring"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [
+    { path = "LICENSE", hash = 0xbd0eed23 },
+]
+
+# -----------------------------------------------------------------
+# Bans
+# -----------------------------------------------------------------
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+deny = []
+skip = []
+skip-tree = []
+
+# -----------------------------------------------------------------
+# Sources — crates.io only.
+# -----------------------------------------------------------------
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

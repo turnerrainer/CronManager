@@ -1,0 +1,198 @@
+name: Publish container image
+
+# Trigger on release tag push OR manual dispatch.
+#
+# Tag-push (the normal path):
+#   v0.7.1         → stable release
+#   v0.7.1-rc.1    → pre-release (rc / beta / alpha / preview / any suffix)
+# The `derive version tags` step below reads which shape was pushed
+# and chooses whether to move :latest and :major.minor accordingly.
+#
+# workflow_dispatch (the escape hatch):
+#   Lets an operator re-run the publish workflow against an existing
+#   tag from the Actions UI without cutting a new tag.
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to publish (e.g. v0.1.0-rc.2). Must already exist on the repo."
+        required: true
+        type: string
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      # Derive the tag list. Two paths:
+      #   * Stable release (`v0.7.1`):
+      #       → push :0.7.1, :0.7, :latest
+      #   * Pre-release  (`v0.7.1-rc.1`, ...):
+      #       → push :0.7.1-rc.1 AND :<suffix-type> (e.g. :rc, :beta).
+      #         Never move :latest or :0.7 from a pre-release.
+      - name: Compose image tags
+        id: meta
+        env:
+          TAG_REF: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG_REF#v}"
+          if [[ "$VERSION" == *-* ]]; then
+            PRERELEASE=true
+            SUFFIX="${VERSION#*-}"
+            SUFFIX_TYPE="${SUFFIX%%.*}"
+            TAG_LINES=$(cat <<END
+          ghcr.io/buerostack/cronmanager-on-rust:$VERSION
+          ghcr.io/buerostack/cronmanager-on-rust:$SUFFIX_TYPE
+          docker.io/buerostack/cronmanager-on-rust:$VERSION
+          docker.io/buerostack/cronmanager-on-rust:$SUFFIX_TYPE
+          END
+          )
+          else
+            PRERELEASE=false
+            MAJOR_MINOR="${VERSION%.*}"
+            TAG_LINES=$(cat <<END
+          ghcr.io/buerostack/cronmanager-on-rust:$VERSION
+          ghcr.io/buerostack/cronmanager-on-rust:$MAJOR_MINOR
+          ghcr.io/buerostack/cronmanager-on-rust:latest
+          docker.io/buerostack/cronmanager-on-rust:$VERSION
+          docker.io/buerostack/cronmanager-on-rust:$MAJOR_MINOR
+          docker.io/buerostack/cronmanager-on-rust:latest
+          END
+          )
+          fi
+          echo "version=$VERSION"        >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE"  >> "$GITHUB_OUTPUT"
+          {
+            echo "tags<<END_OF_TAGS"
+            echo "$TAG_LINES"
+            echo "END_OF_TAGS"
+          } >> "$GITHUB_OUTPUT"
+          echo "Publishing tags:"
+          echo "$TAG_LINES"
+
+      # SOURCE_DATE_EPOCH pins layer timestamps to the tag commit's
+      # time. Buildx honours it with `rewrite-timestamp=true` below.
+      - name: Compute SOURCE_DATE_EPOCH from commit time
+        id: sde
+        run: echo "epoch=$(git log -1 --pretty=%ct)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Repo secrets needed: DOCKERHUB_USERNAME + DOCKERHUB_TOKEN
+      # (Read/Write/Delete scope). See STANDARDS.md §11.
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push (multi-arch)
+        id: build
+        uses: docker/build-push-action@v6
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.sde.outputs.epoch }}
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          outputs: type=image,push=true,rewrite-timestamp=true
+          tags: ${{ steps.meta.outputs.tags }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+          # `ignore-error=true` — cache-export failures on re-runs
+          # / workflow_dispatch should not fail the publish.
+          cache-to: type=gha,mode=max,ignore-error=true
+
+      - name: Trivy vulnerability scan (linux/amd64 layer)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: docker.io/buerostack/cronmanager-on-rust@${{ steps.build.outputs.digest }}
+          format: table
+          exit-code: '1'
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          vuln-type: os,library
+          scanners: vuln
+
+      # Smoke test each per-arch image. Docker keys locally-cached
+      # images by digest, not (digest, platform), so we docker rmi
+      # between iterations and pull explicitly with --platform.
+      - name: Smoke test — /health on both arches
+        env:
+          IMAGE: docker.io/buerostack/cronmanager-on-rust@${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          for platform in linux/amd64 linux/arm64; do
+            echo "::group::smoke test on ${platform}"
+            docker image rm -f "${IMAGE}" >/dev/null 2>&1 || true
+            docker pull --quiet --platform "${platform}" "${IMAGE}"
+            cid="$(docker run -d --rm --platform "${platform}" \
+                   -p 18080:8080 "${IMAGE}")"
+
+            ok=0
+            for i in $(seq 1 90); do
+              if curl -sf http://localhost:18080/health >/dev/null; then
+                echo "${platform}: /health OK after ${i}s"
+                ok=1
+                break
+              fi
+              sleep 1
+            done
+
+            if [ "${ok}" -ne 1 ]; then
+              echo "::error::${platform}: /health did not respond within 90s"
+              docker logs "${cid}" || true
+              docker rm -f "${cid}" >/dev/null 2>&1 || true
+              exit 1
+            fi
+
+            docker rm -f "${cid}" >/dev/null
+            echo "::endgroup::"
+          done
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign published images (keyless)
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          for registry_image in \
+              ghcr.io/buerostack/cronmanager-on-rust \
+              docker.io/buerostack/cronmanager-on-rust
+          do
+            echo "Signing ${registry_image}@${DIGEST}"
+            cosign sign --yes "${registry_image}@${DIGEST}"
+          done
