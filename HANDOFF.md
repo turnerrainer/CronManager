@@ -7,10 +7,12 @@ fmt + clippy `-D warnings` clean; cargo audit clean (1
 documented ignore, `RUSTSEC-2023-0071` in transitive `rsa` via
 `sqlx-postgres`, no upstream fix, mirrored to `deny.toml` with
 review date 2027-01-31); cargo deny check all clean; mdbook +
-linkcheck build clean; docker image `cronmanager:0.1.0-alpha.1`
-builds locally.
-**Branch**: `dev` — tagged `v0.1.0-alpha.1` locally. Publish flow
-(GitHub + Docker Hub + GHCR) runs on tag push.
+linkcheck build clean; `v0.1.0-alpha.1` published via CI in
+44m56s (`turnerrainer/cronmanager:alpha` on Docker Hub + GHCR,
+digest `sha256:eb875b49013ff9663c6b424f2a4da297a1d956a63f1dff5d5411d24848cf97cf`);
+docker pull + `/health` smoke passed.
+**Branch**: `dev` — tagged `v0.1.0-alpha.1` and pushed. Book live
+at <https://turnerrainer.github.io/cronmanager/>.
 
 ## What this repo IS today
 
