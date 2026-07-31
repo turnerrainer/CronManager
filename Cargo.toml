@@ -1,12 +1,12 @@
 [package]
-name = "cronmanager-on-rust"
-version = "0.1.0-rc.1"
+name = "cronmanager"
+version = "0.1.0-alpha.1"
 edition = "2021"
 rust-version = "1.88"
 authors = ["Rainer Türner"]
 license = "Apache-2.0"
 description = "CronManager — Rust implementation. YAML-driven cron scheduler for HTTP + shell jobs."
-repository = "https://github.com/Buerostack/CronManager-on-Rust"
+repository = "https://github.com/turnerrainer/cronmanager"
 
 [dependencies]
 # Web framework + async runtime
@@ -55,7 +55,7 @@ mockito = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }
 
 [[bin]]
-name = "cronmanager-on-rust"
+name = "cronmanager"
 path = "src/main.rs"
 
 # Clippy posture — matches XTR-on-Rust and DEV-REQUIREMENTS §2.

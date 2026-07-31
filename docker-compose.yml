@@ -1,4 +1,4 @@
-# Production-hardened compose file for CronManager-on-Rust.
+# Production-hardened compose file for CronManager.
 # See STANDARDS.md §9 for the security posture rationale.
 services:
   timescaledb:
@@ -20,12 +20,12 @@ services:
       timeout: 5s
       retries: 5
 
-  cronmanager-on-rust:
+  cronmanager:
     build:
       context: .
       dockerfile: Dockerfile
-    image: cronmanager-on-rust:0.1.0-rc.1
-    container_name: cronmanager-on-rust
+    image: cronmanager:0.1.0-alpha.1
+    container_name: cronmanager
     ports:
       - "9010:8080"
     # The image ships cronmanager.yaml + DSL/ + scripts/ baked in

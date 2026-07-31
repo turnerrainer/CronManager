@@ -1,9 +1,9 @@
-//! CronManager-on-Rust entry point.
+//! CronManager entry point.
 //!
 //! Assembles: config → history recorder → executor bundle →
 //! DSL loader → scheduler → axum router → serve.
 
-use cronmanager_on_rust::{
+use cronmanager::{
     config::AppConfig, dsl::loader, executor::ExecutorBundle, history::postgres::PostgresRecorder,
     history::NoopRecorder, router, scheduler::Scheduler,
 };
@@ -19,7 +19,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let version = env!("CARGO_PKG_VERSION");
-    tracing::info!("cronmanager-on-rust v{} starting", version);
+    tracing::info!("cronmanager v{} starting", version);
 
     let (cfg, cfg_source) = AppConfig::load_or_default()?;
     match cfg_source {
@@ -29,30 +29,29 @@ async fn main() -> anyhow::Result<()> {
 
     // History recorder: Postgres if a DSN is configured and
     // reachable, otherwise Noop.
-    let history: Arc<dyn cronmanager_on_rust::history::HistoryRecorder> =
-        match cfg.database_dsn()? {
-            Some(dsn) => {
-                let redacted = redact_password(&dsn);
-                tracing::info!("history: connecting to {}", redacted);
-                match PostgresRecorder::connect(&dsn).await {
-                    Ok(r) => {
-                        tracing::info!("history: enabled (migrations applied)");
-                        Arc::new(r)
-                    }
-                    Err(e) => {
-                        // A misconfigured DB should not kill the
-                        // scheduler entirely — degrade to Noop
-                        // with a loud WARN so ops can fix it.
-                        tracing::error!("history: falling back to noop — DB unreachable: {e}");
-                        Arc::new(NoopRecorder)
-                    }
+    let history: Arc<dyn cronmanager::history::HistoryRecorder> = match cfg.database_dsn()? {
+        Some(dsn) => {
+            let redacted = redact_password(&dsn);
+            tracing::info!("history: connecting to {}", redacted);
+            match PostgresRecorder::connect(&dsn).await {
+                Ok(r) => {
+                    tracing::info!("history: enabled (migrations applied)");
+                    Arc::new(r)
+                }
+                Err(e) => {
+                    // A misconfigured DB should not kill the
+                    // scheduler entirely — degrade to Noop
+                    // with a loud WARN so ops can fix it.
+                    tracing::error!("history: falling back to noop — DB unreachable: {e}");
+                    Arc::new(NoopRecorder)
                 }
             }
-            None => {
-                tracing::info!("history: disabled (no database.url configured)");
-                Arc::new(NoopRecorder)
-            }
-        };
+        }
+        None => {
+            tracing::info!("history: disabled (no database.url configured)");
+            Arc::new(NoopRecorder)
+        }
+    };
 
     let bundle = ExecutorBundle::new(&cfg, history)?;
     let scheduler = Scheduler::new(bundle);

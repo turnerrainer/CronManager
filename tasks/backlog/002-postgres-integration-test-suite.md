@@ -1,7 +1,7 @@
 # 002 — Real-DB integration tests via Testcontainers-rs
 
 ## Filed
-2026-07-29 — surfaced during the v0.1.0-rc.1 scaffold. The current
+2026-07-29 — surfaced during the v0.1.0-alpha.1 scaffold. The current
 integration tests exercise the HTTP surface with `NoopRecorder`;
 history-layer semantics are only covered when a `CRONMANAGER_TEST_DATABASE_URL`
 env var is exported (CI does this via a service container).

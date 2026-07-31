@@ -20,8 +20,8 @@
 //! ```
 
 use chrono::Utc;
-use cronmanager_on_rust::history::postgres::PostgresRecorder;
-use cronmanager_on_rust::history::{ExecutionStatus, HistoryEntry, HistoryRecorder};
+use cronmanager::history::postgres::PostgresRecorder;
+use cronmanager::history::{ExecutionStatus, HistoryEntry, HistoryRecorder};
 
 fn dsn() -> Option<String> {
     std::env::var("CRONMANAGER_TEST_DATABASE_URL").ok()

@@ -4,7 +4,7 @@
 //!
 //! DEV-REQUIREMENTS §3: real fixtures beat hand-rolled ones.
 
-use cronmanager_on_rust::dsl::{loader, JobKind, Trigger};
+use cronmanager::dsl::{loader, JobKind, Trigger};
 use std::path::PathBuf;
 
 fn samples_root() -> PathBuf {

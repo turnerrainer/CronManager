@@ -1,7 +1,7 @@
 # 001 — Deep-dive on the JVM CronManager to define domain surface
 
 ## Filed
-2026-07-29 — first task on the CronManager-on-Rust roadmap.
+2026-07-29 — first task on the CronManager roadmap.
 
 ## Landed
 2026-07-29 — [`docs/DESIGN.md`](../../docs/DESIGN.md) shipped.

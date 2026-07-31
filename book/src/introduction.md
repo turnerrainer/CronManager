@@ -12,15 +12,15 @@ outbound HTTP call or a shell command. Manual triggers, per-job
 retry, and time-window (start/end) constraints are first-class.
 Execution history is persisted to TimescaleDB when configured.
 
-**Version:** 0.1.0-rc.1 · **License:** Apache-2.0
-· **Repo:** [Buerostack/CronManager-on-Rust](https://github.com/Buerostack/CronManager-on-Rust)
-· **Images:** `docker.io/buerostack/cronmanager-on-rust:rc`, `ghcr.io/buerostack/cronmanager-on-rust:rc`
+**Version:** 0.1.0-alpha.1 · **License:** Apache-2.0
+· **Repo:** [turnerrainer/cronmanager](https://github.com/turnerrainer/cronmanager)
+· **Images:** `docker.io/turnerrainer/cronmanager:alpha`, `ghcr.io/turnerrainer/cronmanager:alpha`
 
 ## One-command demo
 
 ```bash
 docker run -d --name cronmanager -p 8080:8080 \
-  buerostack/cronmanager-on-rust:rc
+  turnerrainer/cronmanager:alpha
 curl http://localhost:8080/health          # {"status":"ok"}
 curl -s http://localhost:8080/jobs | head  # loaded jobs, JSON
 ```

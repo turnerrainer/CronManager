@@ -54,7 +54,7 @@ jobs:
       - name: clippy
         run: cargo clippy --all-targets -- -D warnings
       - name: build
-        run: cargo build --release --locked --bin cronmanager-on-rust
+        run: cargo build --release --locked --bin cronmanager
       - name: cargo test
         run: cargo test --release --no-fail-fast
 

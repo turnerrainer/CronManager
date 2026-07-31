@@ -6,7 +6,7 @@
 //! DEV-REQUIREMENTS §3.3 — every code seam gets an integration
 //! test.
 
-use cronmanager_on_rust::{
+use cronmanager::{
     config::AppConfig,
     dsl::{JobKey, JobKind, JobSpec, RetryPolicy, TimeWindow, Trigger},
     executor::ExecutorBundle,
@@ -19,8 +19,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 async fn spawn_app() -> (String, Scheduler) {
-    let mut cfg = AppConfig::default();
-    cfg.app_root_path = std::env::temp_dir();
+    let cfg = AppConfig {
+        app_root_path: std::env::temp_dir(),
+        ..AppConfig::default()
+    };
     let bundle = ExecutorBundle::new(&cfg, Arc::new(NoopRecorder)).unwrap();
     let scheduler = Scheduler::new(bundle);
 

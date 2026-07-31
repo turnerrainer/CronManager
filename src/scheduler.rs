@@ -430,8 +430,10 @@ mod tests {
     fn bundle() -> ExecutorBundle {
         // Override app_root_path so the shell executor doesn't
         // try to cwd into `/app` on the test host.
-        let mut cfg = AppConfig::default();
-        cfg.app_root_path = std::env::temp_dir();
+        let cfg = AppConfig {
+            app_root_path: std::env::temp_dir(),
+            ..AppConfig::default()
+        };
         ExecutorBundle::new(&cfg, Arc::new(NoopRecorder)).unwrap()
     }
 

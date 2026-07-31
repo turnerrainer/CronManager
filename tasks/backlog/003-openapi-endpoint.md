@@ -1,7 +1,7 @@
 # 003 — Auto-generate OpenAPI 3.1 spec at `GET /api`
 
 ## Filed
-2026-07-29 — deferred from v0.1.0-rc.1 scope. Documented in
+2026-07-29 — deferred from v0.1.0-alpha.1 scope. Documented in
 `docs/DESIGN.md` §5 as a non-goal for v0.1.x.
 
 ## Severity

@@ -1,4 +1,4 @@
-# DESIGN — CronManager-on-Rust
+# DESIGN — CronManager
 
 Domain design for the Rust rewrite of the Buerokratt JVM
 CronManager. Written 2026-07-29 by reading the JVM source at

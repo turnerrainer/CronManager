@@ -1,4 +1,4 @@
-# Standards for CronManager-on-Rust
+# Standards for CronManager
 
 This file is a **thin extension** of the authoritative Buerostack
 ruleset at
@@ -10,17 +10,17 @@ this file only carries product-specific extras.
 
 | Variable | Value |
 |---|---|
-| Product name | `CronManager-on-Rust` |
-| Cargo crate name | `cronmanager-on-rust` |
-| Binary name | `cronmanager-on-rust` |
-| GitHub repo | `github.com/Buerostack/CronManager-on-Rust` |
-| Docker Hub image | `buerostack/cronmanager-on-rust` |
-| GHCR image | `ghcr.io/buerostack/cronmanager-on-rust` |
+| Product name | `CronManager` |
+| Cargo crate name | `cronmanager` |
+| Binary name | `cronmanager` |
+| GitHub repo | `github.com/turnerrainer/cronmanager` |
+| Docker Hub image | `turnerrainer/cronmanager` |
+| GHCR image | `ghcr.io/turnerrainer/cronmanager` |
 | License | Apache-2.0 |
-| Book title | `CronManager-on-Rust` |
+| Book title | `CronManager` |
 | First stable target | `v1.0.0` on `main` |
 | Author | Rainer Türner |
-| Namespace on Buerostack | `Buerostack/CronManager-on-Rust` |
+| GitHub namespace | `turnerrainer/cronmanager` |
 
 ## 1. Everything else
 
@@ -51,7 +51,7 @@ front-to-back. Every section applies as written:
   `tasks/done/`.
 - §11 Git — `dev` for active work, `main` for stable.
 
-## 2. CronManager-specific notes
+## 2. Project-specific notes
 
 **Domain of "what CronManager does" lives in
 [`docs/DESIGN.md`](./docs/DESIGN.md), not here.**

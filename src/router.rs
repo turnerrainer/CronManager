@@ -1,4 +1,4 @@
-//! Axum router — the HTTP surface of CronManager-on-Rust.
+//! Axum router — the HTTP surface of CronManager.
 //!
 //! Routes faithful to the JVM `CronController`:
 //!

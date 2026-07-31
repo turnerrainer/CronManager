@@ -1,4 +1,4 @@
-CronManager-on-Rust
+CronManager
 Copyright 2026 Rainer Türner
 
 This product is a Rust reimplementation of CronManager, originally

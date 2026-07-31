@@ -61,22 +61,22 @@ jobs:
             SUFFIX="${VERSION#*-}"
             SUFFIX_TYPE="${SUFFIX%%.*}"
             TAG_LINES=$(cat <<END
-          ghcr.io/buerostack/cronmanager-on-rust:$VERSION
-          ghcr.io/buerostack/cronmanager-on-rust:$SUFFIX_TYPE
-          docker.io/buerostack/cronmanager-on-rust:$VERSION
-          docker.io/buerostack/cronmanager-on-rust:$SUFFIX_TYPE
+          ghcr.io/turnerrainer/cronmanager:$VERSION
+          ghcr.io/turnerrainer/cronmanager:$SUFFIX_TYPE
+          docker.io/turnerrainer/cronmanager:$VERSION
+          docker.io/turnerrainer/cronmanager:$SUFFIX_TYPE
           END
           )
           else
             PRERELEASE=false
             MAJOR_MINOR="${VERSION%.*}"
             TAG_LINES=$(cat <<END
-          ghcr.io/buerostack/cronmanager-on-rust:$VERSION
-          ghcr.io/buerostack/cronmanager-on-rust:$MAJOR_MINOR
-          ghcr.io/buerostack/cronmanager-on-rust:latest
-          docker.io/buerostack/cronmanager-on-rust:$VERSION
-          docker.io/buerostack/cronmanager-on-rust:$MAJOR_MINOR
-          docker.io/buerostack/cronmanager-on-rust:latest
+          ghcr.io/turnerrainer/cronmanager:$VERSION
+          ghcr.io/turnerrainer/cronmanager:$MAJOR_MINOR
+          ghcr.io/turnerrainer/cronmanager:latest
+          docker.io/turnerrainer/cronmanager:$VERSION
+          docker.io/turnerrainer/cronmanager:$MAJOR_MINOR
+          docker.io/turnerrainer/cronmanager:latest
           END
           )
           fi
@@ -137,7 +137,7 @@ jobs:
       - name: Trivy vulnerability scan (linux/amd64 layer)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: docker.io/buerostack/cronmanager-on-rust@${{ steps.build.outputs.digest }}
+          image-ref: docker.io/turnerrainer/cronmanager@${{ steps.build.outputs.digest }}
           format: table
           exit-code: '1'
           severity: HIGH,CRITICAL
@@ -150,7 +150,7 @@ jobs:
       # between iterations and pull explicitly with --platform.
       - name: Smoke test — /health on both arches
         env:
-          IMAGE: docker.io/buerostack/cronmanager-on-rust@${{ steps.build.outputs.digest }}
+          IMAGE: docker.io/turnerrainer/cronmanager@${{ steps.build.outputs.digest }}
         run: |
           set -euo pipefail
           for platform in linux/amd64 linux/arm64; do
@@ -190,8 +190,8 @@ jobs:
         run: |
           set -euo pipefail
           for registry_image in \
-              ghcr.io/buerostack/cronmanager-on-rust \
-              docker.io/buerostack/cronmanager-on-rust
+              ghcr.io/turnerrainer/cronmanager \
+              docker.io/turnerrainer/cronmanager
           do
             echo "Signing ${registry_image}@${DIGEST}"
             cosign sign --yes "${registry_image}@${DIGEST}"

@@ -18,7 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 ca-certificates curl tini bash \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /build/target/release/cronmanager-on-rust /app/cronmanager-on-rust
+COPY --from=builder /build/target/release/cronmanager /app/cronmanager
 # Ship the demo self-contained: default config, sample DSLs, and
 # sample scripts. Operators bind-mount over any of these to override.
 COPY cronmanager.yaml /app/cronmanager.yaml
@@ -33,7 +33,7 @@ RUN useradd -m -u 1000 cronmanager && chown -R cronmanager:cronmanager /app
 USER cronmanager
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["/app/cronmanager-on-rust"]
+CMD ["/app/cronmanager"]
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=15s --retries=3 \
     CMD curl -fsS http://localhost:8080/health || exit 1

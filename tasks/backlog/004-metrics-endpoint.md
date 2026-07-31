@@ -1,7 +1,7 @@
 # 004 — Prometheus `/metrics` endpoint (opt-in via config)
 
 ## Filed
-2026-07-29 — deferred from v0.1.0-rc.1 scope.
+2026-07-29 — deferred from v0.1.0-alpha.1 scope.
 
 ## Severity
 Low.

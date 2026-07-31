@@ -1,16 +1,16 @@
 [book]
-title = "CronManager-on-Rust"
+title = "CronManager"
 authors = ["Rainer Türner"]
-description = "Reference for operators and third-party clients of CronManager-on-Rust."
+description = "Reference for operators and third-party clients of CronManager."
 language = "en"
 src = "src"
 
 [output.html]
 default-theme = "light"
 preferred-dark-theme = "light"
-git-repository-url = "https://github.com/Buerostack/CronManager-on-Rust"
-edit-url-template = "https://github.com/Buerostack/CronManager-on-Rust/edit/dev/book/{path}"
-site-url = "/CronManager-on-Rust/"
+git-repository-url = "https://github.com/turnerrainer/cronmanager"
+edit-url-template = "https://github.com/turnerrainer/cronmanager/edit/dev/book/{path}"
+site-url = "/cronmanager/"
 additional-css = ["theme/custom.css"]
 
 [output.html.search]

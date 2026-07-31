@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to CronManager-on-Rust will be documented in
+All notable changes to CronManager will be documented in
 this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
@@ -8,11 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.0-rc.1] - 2026-07-29
+## [0.1.0-alpha.1] - 2026-07-31
 
-Initial release candidate. Rust reimplementation of the Spring
-Boot / Quartz [CronManager](https://github.com/buerokratt/CronManager)
-scaffolded per the Buerostack `DEV-REQUIREMENTS.md` ruleset.
+Initial alpha. Rust reimplementation of the Spring Boot / Quartz
+[CronManager](https://github.com/buerokratt/CronManager) scaffolded
+per the Buerostack `DEV-REQUIREMENTS.md` ruleset.
 
 ### Added
 
@@ -67,5 +67,5 @@ scaffolded per the Buerostack `DEV-REQUIREMENTS.md` ruleset.
   `HANDOFF.md`, `SECURITY.md`, `STANDARDS.md`, `NOTICE`,
   `VERSION`, `deny.toml`, `.cargo/audit.toml`, `book/`, `tasks/`.
 
-[Unreleased]: https://github.com/Buerostack/CronManager-on-Rust/compare/v0.1.0-rc.1...HEAD
-[0.1.0-rc.1]: https://github.com/Buerostack/CronManager-on-Rust/releases/tag/v0.1.0-rc.1
+[Unreleased]: https://github.com/turnerrainer/cronmanager/compare/v0.1.0-alpha.1...HEAD
+[0.1.0-alpha.1]: https://github.com/turnerrainer/cronmanager/releases/tag/v0.1.0-alpha.1

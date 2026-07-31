@@ -118,4 +118,4 @@ field):
 |---|---|
 | `CRONMANAGER_CONFIG` | Absolute path to `cronmanager.yaml`. |
 | `CRONMANAGER_DB_PASSWORD` (or whatever `database.password_env` names) | The DB password. |
-| `RUST_LOG` | `tracing_subscriber` filter — e.g. `info`, `cronmanager_on_rust=debug`. |
+| `RUST_LOG` | `tracing_subscriber` filter — e.g. `info`, `cronmanager=debug`. |

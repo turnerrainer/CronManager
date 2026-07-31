@@ -272,8 +272,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "cronmanager-on-rust"
-version = "0.1.0-rc.1"
+name = "cronmanager"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "async-trait",

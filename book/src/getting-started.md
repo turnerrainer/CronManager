@@ -14,22 +14,22 @@ minutes from clone to first fire.
 
 ```bash
 docker run -d --name cronmanager -p 8080:8080 \
-  buerostack/cronmanager-on-rust:rc
+  turnerrainer/cronmanager:alpha
 ```
 
 **With Docker Compose (includes TimescaleDB for execution history):**
 
 ```bash
-git clone -b dev https://github.com/Buerostack/CronManager-on-Rust.git
-cd CronManager-on-Rust
+git clone -b dev https://github.com/turnerrainer/cronmanager.git
+cd cronmanager
 docker compose up -d
 ```
 
 **From source:**
 
 ```bash
-git clone -b dev https://github.com/Buerostack/CronManager-on-Rust.git
-cd CronManager-on-Rust
+git clone -b dev https://github.com/turnerrainer/cronmanager.git
+cd cronmanager
 cargo run --release
 ```
 
@@ -73,7 +73,7 @@ Restart the container (or send `POST /reload/samples-mine-ping` if
 already running):
 
 ```bash
-docker compose restart cronmanager-on-rust
+docker compose restart cronmanager
 curl -s http://localhost:8080/jobs | grep ping_google
 ```
 
