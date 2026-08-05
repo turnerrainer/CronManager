@@ -12,7 +12,7 @@ outbound HTTP call or a shell command. Manual triggers, per-job
 retry, and time-window (start/end) constraints are first-class.
 Execution history is persisted to TimescaleDB when configured.
 
-**Version:** 0.1.0-alpha.2 · **License:** Apache-2.0
+**Version:** 0.1.0-alpha.3 · **License:** Apache-2.0
 · **Repo:** [turnerrainer/cronmanager](https://github.com/turnerrainer/cronmanager)
 · **Images:** `docker.io/turnerrainer/cronmanager:alpha`, `ghcr.io/turnerrainer/cronmanager:alpha`
 

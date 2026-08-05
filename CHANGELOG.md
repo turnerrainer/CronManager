@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.3] - 2026-08-05
+
+CI housekeeping. No product changes — same binary behaviour, same
+image contents, same 90-test suite (0 failures).
+
+### Changed
+
+- Bumped all workflow actions to Node-24-native majors, silencing
+  the "Node.js 20 is deprecated" annotation surfaced on the
+  alpha.2 publish run:
+  - `actions/checkout`              v4 → v5
+  - `actions/cache`                 v4 → v6
+  - `actions/upload-pages-artifact` v3 → v5
+  - `actions/deploy-pages`          v4 → v5
+  - `docker/build-push-action`      v6 → v7
+  - `docker/login-action`           v3 → v4
+  - `docker/setup-buildx-action`    v3 → v4
+  - `docker/setup-qemu-action`      v3 → v4
+
 ## [0.1.0-alpha.2] - 2026-08-05
 
 JVM-compatibility hardening pass. No breaking changes for existing
@@ -134,6 +153,7 @@ per the Buerostack `DEV-REQUIREMENTS.md` ruleset.
   `HANDOFF.md`, `SECURITY.md`, `STANDARDS.md`, `NOTICE`,
   `VERSION`, `deny.toml`, `.cargo/audit.toml`, `book/`, `tasks/`.
 
-[Unreleased]: https://github.com/turnerrainer/cronmanager/compare/v0.1.0-alpha.2...HEAD
+[Unreleased]: https://github.com/turnerrainer/cronmanager/compare/v0.1.0-alpha.3...HEAD
+[0.1.0-alpha.3]: https://github.com/turnerrainer/cronmanager/releases/tag/v0.1.0-alpha.3
 [0.1.0-alpha.2]: https://github.com/turnerrainer/cronmanager/releases/tag/v0.1.0-alpha.2
 [0.1.0-alpha.1]: https://github.com/turnerrainer/cronmanager/releases/tag/v0.1.0-alpha.1
