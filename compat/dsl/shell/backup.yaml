@@ -1,0 +1,8 @@
+# Backup job with environment variables
+daily_backup:
+  trigger: "0 0 2 * * ?"  # Daily at 2 AM
+  type: exec
+  command: ./scripts/samples/backup.sh
+  allowedEnvs:
+    - BACKUP_DIR
+    - RETENTION_DAYS

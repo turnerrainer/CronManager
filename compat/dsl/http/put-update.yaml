@@ -1,0 +1,9 @@
+# PUT request example with aggressive retry
+update_resource:
+  trigger: "0 30 */6 * * ?"  # Every 6 hours at minute 30
+  type: http
+  method: PUT
+  url: https://httpbin.org/put
+  retryCount: 5
+  retryDelay: 3000
+  ignoreFailures: true

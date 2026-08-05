@@ -1,0 +1,5 @@
+# Simple shell command
+hello_world:
+  trigger: "0 */10 * * * ?"  # Every 10 minutes
+  type: exec
+  command: ./scripts/samples/hello_world.sh

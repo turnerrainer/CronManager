@@ -68,9 +68,41 @@ impl ExecutorBundle {
         let max_attempts = spec.retry.count + 1;
         let mut last_error: Option<String> = None;
 
+        // Snapshot for logs — group/name/method/url are cheap to
+        // clone once, avoids re-borrowing spec inside the loop.
+        let group = spec.key.group.clone();
+        let name = spec.key.name.clone();
+        let (http_method_log, http_url_log): (Option<String>, Option<String>) = match &spec.kind {
+            JobKind::Http { method, url } => (Some(method.clone()), Some(url.clone())),
+            JobKind::Exec { .. } => (None, None),
+        };
+
         for attempt in 1..=max_attempts {
             let started = Instant::now();
             let attempt_at = Utc::now();
+
+            // Per-attempt DEBUG log — mirrors JVM
+            // `HttpHelper.java:39`.
+            match &spec.kind {
+                JobKind::Http { method, url } => tracing::debug!(
+                    "http: attempt {}/{} for {} {} ({}/{})",
+                    attempt,
+                    max_attempts,
+                    method,
+                    url,
+                    group,
+                    name
+                ),
+                JobKind::Exec { command, .. } => tracing::debug!(
+                    "shell: attempt {}/{} for {} ({}/{})",
+                    attempt,
+                    max_attempts,
+                    command,
+                    group,
+                    name
+                ),
+            }
+
             let result = match &spec.kind {
                 JobKind::Http { method, url } => self
                     .http
@@ -89,6 +121,58 @@ impl ExecutorBundle {
                     .map_err(HttpDispatchResult::from_shell_err),
             };
             let duration_ms = started.elapsed().as_millis() as i64;
+
+            // Structured logs mirroring the JVM `HttpHelper` /
+            // shell log lines: INFO on retry-success, WARN per
+            // failed retry, ERROR/WARN at end of the retry loop.
+            match (&result, attempt, max_attempts) {
+                (Ok(_), a, _) if a > 1 => match (&http_method_log, &http_url_log) {
+                    (Some(m), Some(u)) => tracing::info!(
+                        "http: request succeeded on attempt {}/{} for {} {} ({}/{})",
+                        a,
+                        max_attempts,
+                        m,
+                        u,
+                        group,
+                        name
+                    ),
+                    _ => tracing::info!(
+                        "shell: request succeeded on attempt {}/{} ({}/{})",
+                        a,
+                        max_attempts,
+                        group,
+                        name
+                    ),
+                },
+                (
+                    Err(HttpDispatchResult {
+                        error_message: Some(msg),
+                        ..
+                    }),
+                    a,
+                    max,
+                ) if a < max => match (&http_method_log, &http_url_log) {
+                    (Some(m), Some(u)) => tracing::warn!(
+                        "http: attempt {}/{} failed for {} {} ({}/{}): {}",
+                        a,
+                        max,
+                        m,
+                        u,
+                        group,
+                        name,
+                        msg
+                    ),
+                    _ => tracing::warn!(
+                        "shell: attempt {}/{} failed ({}/{}): {}",
+                        a,
+                        max,
+                        group,
+                        name,
+                        msg
+                    ),
+                },
+                _ => {}
+            }
 
             let (status_for_history, err_for_next_iter, response_body, http_status_code) =
                 match &result {
@@ -195,8 +279,45 @@ impl ExecutorBundle {
         // FAILED → SKIPPED for the caller's outcome but the
         // per-attempt history rows retain their real status.
         let final_status = if spec.retry.ignore_failures {
+            match (&http_method_log, &http_url_log) {
+                (Some(m), Some(u)) => tracing::warn!(
+                    "http: ignoring failure after {} attempts for {} {} ({}/{})",
+                    max_attempts,
+                    m,
+                    u,
+                    group,
+                    name
+                ),
+                _ => tracing::warn!(
+                    "shell: ignoring failure after {} attempts ({}/{})",
+                    max_attempts,
+                    group,
+                    name
+                ),
+            }
             ExecutionStatus::Skipped
         } else {
+            let err_desc = last_error
+                .clone()
+                .unwrap_or_else(|| "no message".to_string());
+            match (&http_method_log, &http_url_log) {
+                (Some(m), Some(u)) => tracing::error!(
+                    "http: all {} attempts failed for {} {} ({}/{}): {}",
+                    max_attempts,
+                    m,
+                    u,
+                    group,
+                    name,
+                    err_desc
+                ),
+                _ => tracing::error!(
+                    "shell: all {} attempts failed ({}/{}): {}",
+                    max_attempts,
+                    group,
+                    name,
+                    err_desc
+                ),
+            }
             ExecutionStatus::Failed
         };
         DispatchOutcome {

@@ -94,6 +94,19 @@ impl Scheduler {
         // task ends and we don't leak a duplicate loop.
         self.inner.jobs.lock().unwrap().remove(&key);
 
+        // Per-job INFO log — mirrors JVM `CronService.java:36`
+        // for grep parity.
+        let trigger_desc = match &spec.trigger {
+            Trigger::Cron(expr) => expr.as_str(),
+            Trigger::Manual => "manual",
+        };
+        tracing::info!(
+            "scheduler: adding {}/{} trigger {}",
+            spec.key.group,
+            spec.key.name,
+            trigger_desc
+        );
+
         let task = match &spec.trigger {
             Trigger::Cron(expr) => {
                 let scheduler = self.clone();

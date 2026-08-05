@@ -1,0 +1,5 @@
+# Manual execution only
+manual_script:
+  trigger: off
+  type: exec
+  command: ./scripts/samples/manual_task.sh

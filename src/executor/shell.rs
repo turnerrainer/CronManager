@@ -32,6 +32,10 @@ pub struct ShellAttempt {
 
 impl ShellExecutor {
     pub fn new(cfg: &AppConfig) -> Self {
+        tracing::info!(
+            "shell: baseline env has {} entries",
+            cfg.shell_environment.len()
+        );
         Self {
             baseline_env: Arc::new(cfg.shell_environment.clone()),
             app_root: Arc::new(cfg.app_root_path.clone()),

@@ -38,3 +38,16 @@ build/
 # Environment
 .env
 .env.local
+
+# In-house development artefacts — cross-project refacto ruleset
+# outputs (coverage matrix, divergence log, migration prose,
+# operator porting checklist, boot-diagnostic captures, deviation
+# log, and the accompanying refacto-specific backlog task). Kept
+# on-disk during development; not published.
+/DIVERGENCES.md
+/REFACTO-DEVIATIONS.md
+/docs/refacto/
+/tasks/backlog/008-cross-impl-harness.md
+
+# mdBook linkcheck cache
+/book/linkcheck/

@@ -7,30 +7,48 @@
 //! 2. `CRONMANAGER_CONFIG` env var
 //! 3. `./cronmanager.yaml` or `./cronmanager.yml`
 //! 4. Built-in defaults if nothing is found
+//!
+//! JVM-compat notes:
+//!
+//! * `#[serde(deny_unknown_fields)]` at every level — a typo in
+//!   the operator's file is a hard load error, not a silent no-op.
+//! * `#[serde(alias = "…")]` on every field the JVM
+//!   `application.yml` spelled differently, so a copy-paste port
+//!   binds without a rename.
+//! * `allowed_origins` accepts both a YAML list (native form) and
+//!   the JVM-style comma-separated string, via a custom
+//!   deserialiser.
+//! * The top-level JVM Spring wrappers (`application:`, `spring:`,
+//!   `management:`, `logging:`) are caught by a preflight and
+//!   rejected with a diagnostic that names the wrapper so the
+//!   operator knows what to unwrap.
 
 use crate::error::CronManagerError;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AppConfig {
     #[serde(default = "default_port")]
     pub port: u16,
 
-    #[serde(default = "default_dsl_path")]
+    #[serde(default = "default_dsl_path", alias = "configPath")]
     pub dsl_path: PathBuf,
 
-    #[serde(default = "default_app_root_path")]
+    #[serde(default = "default_app_root_path", alias = "appRootPath")]
     pub app_root_path: PathBuf,
 
-    /// Empty list disables the CORS layer entirely.
-    #[serde(default)]
+    /// Empty list disables the CORS layer entirely. Accepts either
+    /// a YAML list (`["a", "b"]`) or a JVM-style comma-separated
+    /// string (`"a,b"`).
+    #[serde(default, alias = "allowedOrigins", deserialize_with = "de_origins")]
     pub allowed_origins: Vec<String>,
 
     /// Baseline environment map for shell jobs. Each job still
     /// whitelists specific keys via `allowedEnvs`.
-    #[serde(default)]
+    #[serde(default, alias = "shellEnvironment")]
     pub shell_environment: BTreeMap<String, String>,
 
     #[serde(default)]
@@ -46,6 +64,7 @@ pub struct AppConfig {
 /// workloads. Increase carefully — every raise widens the DoS
 /// surface at the boundary.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Limits {
     #[serde(default = "default_max_request_bytes")]
     pub max_request_bytes: usize,
@@ -75,6 +94,7 @@ impl Default for Limits {
 /// `password_env` — a plain `password:` field is intentionally
 /// NOT accepted (DEV-REQUIREMENTS §5.2).
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct DatabaseCfg {
     /// DSN without credentials, e.g.
     /// `postgres://cronmanager@timescaledb:5432/cronmanager`.
@@ -133,6 +153,7 @@ impl AppConfig {
         for path in config_search_paths() {
             if path.exists() {
                 let body = std::fs::read_to_string(&path)?;
+                reject_jvm_wrappers(&body, &path)?;
                 let cfg: AppConfig =
                     serde_yaml_ng::from_str(&body).map_err(|e| CronManagerError::YamlParse {
                         path: path.display().to_string(),
@@ -159,6 +180,105 @@ impl AppConfig {
         })?;
         Ok(Some(splice_password(&db.url, &password)))
     }
+
+    /// Emit one INFO-level diagnostic line per config field that
+    /// meaningfully differs from a "fresh install" baseline, and
+    /// one WARN per field that is parsed-but-unwired or set to a
+    /// value likely to surprise the operator. Called once at boot.
+    /// Kept side-effect-free apart from log output so tests can
+    /// exercise it against arbitrary configs.
+    pub fn boot_diagnostics(&self) {
+        tracing::info!(
+            "config: port={} dsl_path={} app_root_path={} origins={} shell_env_keys={} history_db={} limits[req={},resp={},http_to={}s,shell_to={}s]",
+            self.port,
+            self.dsl_path.display(),
+            self.app_root_path.display(),
+            self.allowed_origins.len(),
+            self.shell_environment.len(),
+            self.database.is_some(),
+            self.limits.max_request_bytes,
+            self.limits.max_response_bytes,
+            self.limits.request_timeout_secs,
+            self.limits.shell_timeout_secs,
+        );
+
+        if self.limits.request_timeout_secs == 0 {
+            tracing::warn!(
+                "config: limits.request_timeout_secs=0 disables the HTTP timeout — a slow upstream can pin the executor indefinitely"
+            );
+        }
+        if self.limits.shell_timeout_secs == 0 {
+            tracing::warn!(
+                "config: limits.shell_timeout_secs=0 disables the shell wall-clock cap — a runaway process will not be SIGKILLed"
+            );
+        }
+        if self.allowed_origins.iter().any(|o| o == "*") {
+            tracing::warn!(
+                "config: allowed_origins contains \"*\" — the CORS layer matches exactly and does NOT treat \"*\" as a wildcard; list every allowed origin explicitly"
+            );
+        }
+        if self.database.is_none() {
+            tracing::info!(
+                "config: history persistence disabled (no `database.url` set); job execution rows are logged at DEBUG only"
+            );
+        }
+    }
+}
+
+/// Emit a helpful error if the operator pasted a JVM
+/// `application.yml` — the whole schema lives one level down under
+/// `application:` / `spring:` / `management:` / `logging:` in JVM
+/// and the flat Rust loader would otherwise reject those with a
+/// generic "unknown field" error that doesn't hint at the fix.
+fn reject_jvm_wrappers(body: &str, path: &std::path::Path) -> Result<(), CronManagerError> {
+    for line in body.lines() {
+        // Only inspect unindented, non-comment lines — nested keys
+        // of the same name are not JVM wrappers.
+        if line.starts_with(char::is_whitespace) || line.starts_with('#') {
+            continue;
+        }
+        for wrapper in ["application:", "spring:", "management:", "logging:"] {
+            if line.starts_with(wrapper) {
+                return Err(CronManagerError::InvalidConfig {
+                    path: path.display().to_string(),
+                    reason: format!(
+                        "top-level `{wrapper}` is the JVM Spring wrapper. CronManager uses a flat config schema — unwrap the child fields to the top level (e.g. `application.configPath: X` becomes `dsl_path: X` at the top level; `spring.datasource.*` becomes `database.url` + env-var `CRONMANAGER_DB_PASSWORD`)."
+                    ),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Deserialise `allowed_origins` from either a YAML sequence or a
+/// JVM-style comma-separated string. Empty strings and whitespace-
+/// only entries are dropped to match JVM's `String.split(",")` +
+/// `trim` post-processing.
+fn de_origins<'de, D>(d: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+    let val = OneOrMany::deserialize(d)?;
+    let out = match val {
+        OneOrMany::One(s) => s
+            .split(',')
+            .map(|part| part.trim().to_string())
+            .filter(|p| !p.is_empty())
+            .collect(),
+        OneOrMany::Many(list) => list
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|p| !p.is_empty())
+            .collect(),
+    };
+    Ok(out)
 }
 
 /// Splice a password into a Postgres URL:
@@ -303,5 +423,105 @@ mod tests {
     fn database_dsn_none_when_no_db_configured() {
         let cfg = AppConfig::default();
         assert!(cfg.database_dsn().unwrap().is_none());
+    }
+
+    #[test]
+    fn unknown_top_level_field_is_hard_error() {
+        // R2.2: a typo like `dslpath:` must fail loudly.
+        let yaml = "dslpath: DSL\n";
+        let err = serde_yaml_ng::from_str::<AppConfig>(yaml).unwrap_err();
+        // serde error should mention the offending key.
+        let msg = err.to_string();
+        assert!(msg.contains("dslpath"), "error was: {msg}");
+    }
+
+    #[test]
+    fn jvm_camelcase_aliases_still_bind() {
+        // R2.4: preserve JVM field aliases for a copy-paste port.
+        let yaml = "configPath: /var/lib/cron\nappRootPath: /app\nallowedOrigins: [x, y]\nshellEnvironment: {A: '1'}\n";
+        let cfg: AppConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.dsl_path, PathBuf::from("/var/lib/cron"));
+        assert_eq!(cfg.app_root_path, PathBuf::from("/app"));
+        assert_eq!(cfg.allowed_origins, vec!["x", "y"]);
+        assert!(cfg.shell_environment.contains_key("A"));
+    }
+
+    #[test]
+    fn allowed_origins_accepts_jvm_comma_string() {
+        // JVM shipped this as a String, not a list.
+        let yaml = "allowed_origins: \"localhost,192.168.10.1,127.0.0.1\"\n";
+        let cfg: AppConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(
+            cfg.allowed_origins,
+            vec!["localhost", "192.168.10.1", "127.0.0.1"]
+        );
+    }
+
+    #[test]
+    fn allowed_origins_string_drops_empty_segments() {
+        let yaml = "allowed_origins: \" , a , ,b, \"\n";
+        let cfg: AppConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.allowed_origins, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn top_level_application_wrapper_is_rejected_with_hint() {
+        // Reject the JVM Spring wrapper form with a diagnostic
+        // that names the wrapper AND shows the fix inline.
+        let yaml = "application:\n  configPath: DSL/samples\n";
+        let err = reject_jvm_wrappers(yaml, std::path::Path::new("test.yaml")).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("application"), "err was: {msg}");
+        assert!(
+            msg.contains("flat config schema") || msg.contains("dsl_path"),
+            "err was: {msg}"
+        );
+    }
+
+    #[test]
+    fn top_level_spring_wrapper_is_rejected() {
+        let yaml = "spring:\n  datasource:\n    url: x\n";
+        assert!(reject_jvm_wrappers(yaml, std::path::Path::new("t.yaml")).is_err());
+    }
+
+    #[test]
+    fn top_level_management_wrapper_is_rejected() {
+        let yaml = "management:\n  endpoints: {}\n";
+        assert!(reject_jvm_wrappers(yaml, std::path::Path::new("t.yaml")).is_err());
+    }
+
+    #[test]
+    fn nested_application_key_is_not_rejected() {
+        // Only top-level wrappers are the failure mode we care
+        // about — a nested `application:` inside a legit block is
+        // fine (imaginary but the guard mustn't fire on it).
+        let yaml = "shell_environment:\n  application: legit\n";
+        assert!(reject_jvm_wrappers(yaml, std::path::Path::new("t.yaml")).is_ok());
+    }
+
+    #[test]
+    fn unknown_limits_field_is_hard_error() {
+        let yaml = "limits:\n  max_response_bytes: 100\n  banana: 1\n";
+        let err = serde_yaml_ng::from_str::<AppConfig>(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("banana"), "err was: {msg}");
+    }
+
+    #[test]
+    fn unknown_database_field_is_hard_error() {
+        let yaml = "database:\n  url: postgres://x\n  password: nope\n";
+        let err = serde_yaml_ng::from_str::<AppConfig>(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("password"), "err was: {msg}");
+    }
+
+    #[test]
+    fn boot_diagnostics_does_not_panic() {
+        // Smoke: exercise every warn branch to catch fmt regressions.
+        let mut cfg = AppConfig::default();
+        cfg.allowed_origins.push("*".into());
+        cfg.limits.request_timeout_secs = 0;
+        cfg.limits.shell_timeout_secs = 0;
+        cfg.boot_diagnostics();
     }
 }

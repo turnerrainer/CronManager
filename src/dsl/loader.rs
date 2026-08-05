@@ -53,6 +53,7 @@ fn walk(root: &Path, current: &Path, out: &mut Vec<LoadedJob>) -> Result<(), Cro
 /// Parse one YAML file into zero or more `LoadedJob`s. The file
 /// is a top-level mapping from job name to job definition.
 pub fn load_file(root: &Path, file: &Path) -> Result<Vec<LoadedJob>, CronManagerError> {
+    tracing::info!("dsl: loading {}", file.display());
     let body = std::fs::read_to_string(file)?;
     let raw: BTreeMap<String, RawJob> =
         serde_yaml_ng::from_str(&body).map_err(|e| CronManagerError::YamlParse {
@@ -68,6 +69,7 @@ pub fn load_file(root: &Path, file: &Path) -> Result<Vec<LoadedJob>, CronManager
             source_path: file.to_path_buf(),
         });
     }
+    tracing::info!("dsl: group {} → {} job(s)", group, out.len());
     Ok(out)
 }
 
@@ -93,7 +95,12 @@ fn is_yaml(path: &Path) -> bool {
 /// `RawTrigger` accepts both `trigger: "0 * * * * ?"` (string)
 /// and `trigger: false` (bool). YAML 1.2 treats `off`/`no`/`yes`/`on`
 /// as strings, not booleans; we normalise the strings too.
+///
+/// `deny_unknown_fields` hardens the JVM's silent-drop behaviour.
+/// A typo like `retryCoun: 3` — silently ignored on JVM — is a
+/// hard load error here.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawJob {
     trigger: RawTrigger,
     #[serde(rename = "type")]

@@ -1,0 +1,8 @@
+# REST API status check
+api_status_check:
+  trigger: "0 */10 * * * ?"  # Every 10 minutes
+  type: http
+  method: GET
+  url: https://jsonplaceholder.typicode.com/posts/1
+  retryCount: 2
+  ignoreFailures: true
