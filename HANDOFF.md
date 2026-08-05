@@ -4,13 +4,25 @@
 **Last verified green**: 2026-08-05 — cargo test 90/0/0 (61 unit
 + 29 integration; 3 postgres-conditional skipped without DB); fmt
 + clippy `-D warnings` clean; mdbook + linkcheck build clean;
-`v0.1.0-alpha.2` published via CI in 41m44s
-(`turnerrainer/cronmanager:alpha` on Docker Hub + GHCR, digest
-`sha256:c9e26a4cc909e8bdf8ec0a1b021d533ba0d5d21fe34ef7b7b5a7d4158826ab69`
-— identical across both registries); docker pull + `/health` +
-`/actuator/health` alias + `/actuator/info` smoke passed; boot
-diagnostic pass verified in container logs.
-**Branch**: `dev` — tagged `v0.1.0-alpha.2` and pushed. Book live
+`v0.1.0-alpha.3` published via CI in 41m3s with no deprecation
+annotations (`turnerrainer/cronmanager:alpha` on Docker Hub +
+GHCR, digest
+`sha256:6a761e9273bcbf205b7ae75917bd9336938cb865a4a63c4d499307698bbeeaeb`
+— identical across both registries); full local endpoint sweep
+passed: `/`, `/health`, `/actuator/health` alias, `/actuator/info`
+(reports v0.1.0-alpha.3), `/jobs` + `/jobs/` trailing-slash pair,
+`/running` + `/running/` trailing-slash pair, `/jobs/{group}`,
+`POST /execute/…`, `POST /stop/…` (returns
+`{"stopped":bool,"running":…}`), `POST /reload/…` (returns
+`{"reloaded":N}`, N=11 in demo image), `413` on body over
+`limits.max_request_bytes`, `404 job_not_found` structured JSON
+on unknown job. Boot-diagnostic INFO summary + per-file DSL load
++ per-group summary + per-job scheduler INFO + retry-parity ERROR
+log line all verified live in container logs.
+Previous digest `sha256:c9e26a4cc909e8bdf8ec0a1b021d533ba0d5d21fe34ef7b7b5a7d4158826ab69`
+was `v0.1.0-alpha.2` (superseded by alpha.3; no product diff, CI
+housekeeping only).
+**Branch**: `dev` — tagged `v0.1.0-alpha.3` and pushed. Book live
 at <https://turnerrainer.github.io/cronmanager/>.
 
 ## What this repo IS today
