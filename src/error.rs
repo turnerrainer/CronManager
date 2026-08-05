@@ -24,6 +24,9 @@ pub enum CronManagerError {
     #[error("invalid job definition {source_path}: {reason}")]
     InvalidJobDefinition { source_path: String, reason: String },
 
+    #[error("invalid config file {path}: {reason}")]
+    InvalidConfig { path: String, reason: String },
+
     #[error("invalid cron expression '{expression}': {reason}")]
     InvalidCron { expression: String, reason: String },
 
@@ -70,9 +73,10 @@ impl CronManagerError {
         match self {
             Self::JobNotFound { .. } => StatusCode::NOT_FOUND,
             Self::JobAlreadyRunning { .. } => StatusCode::CONFLICT,
-            Self::InvalidJobDefinition { .. } | Self::InvalidCron { .. } | Self::BadRequest(_) => {
-                StatusCode::BAD_REQUEST
-            }
+            Self::InvalidJobDefinition { .. }
+            | Self::InvalidConfig { .. }
+            | Self::InvalidCron { .. }
+            | Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::RequestTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
             Self::UpstreamHttpError { .. } | Self::UpstreamBodyTooLarge { .. } => {
                 StatusCode::BAD_GATEWAY
@@ -92,6 +96,7 @@ impl CronManagerError {
             Self::JobNotFound { .. } => "job_not_found",
             Self::JobAlreadyRunning { .. } => "job_already_running",
             Self::InvalidJobDefinition { .. } => "invalid_job_definition",
+            Self::InvalidConfig { .. } => "invalid_config",
             Self::InvalidCron { .. } => "invalid_cron",
             Self::RequestTooLarge { .. } => "request_too_large",
             Self::BadRequest(_) => "bad_request",

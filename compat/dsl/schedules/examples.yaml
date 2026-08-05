@@ -1,0 +1,70 @@
+# Schedule Pattern Examples
+# Demonstrates various cron expression patterns
+
+# Every minute - with retry and failure handling
+every_minute:
+  trigger: "0 * * * * ?"
+  type: http
+  method: GET
+  url: https://httpbin.org/get
+  retryCount: 3           # Retry up to 3 times on failure
+  retryDelay: 2000        # Wait 2 seconds between retries
+  ignoreFailures: true    # Don't throw exception if all retries fail
+
+# Every 30 seconds - simple configuration
+every_30_seconds:
+  trigger: "*/30 * * * * ?"
+  type: http
+  method: GET
+  url: https://httpbin.org/get
+  retryCount: 2
+  ignoreFailures: true
+
+# Hourly at minute 0
+hourly:
+  trigger: "0 0 * * * ?"
+  type: http
+  method: GET
+  url: https://httpbin.org/get
+
+# Daily at 2:30 AM
+daily_at_230am:
+  trigger: "0 30 2 * * ?"
+  type: http
+  method: GET
+  url: https://httpbin.org/get
+
+# Every weekday at 9 AM
+weekday_morning:
+  trigger: "0 0 9 ? * MON-FRI"
+  type: http
+  method: GET
+  url: https://httpbin.org/get
+
+# Every Monday at 8 AM
+monday_morning:
+  trigger: "0 0 8 ? * MON"
+  type: http
+  method: GET
+  url: https://httpbin.org/get
+
+# First day of month at midnight
+first_of_month:
+  trigger: "0 0 0 1 * ?"
+  type: http
+  method: GET
+  url: https://httpbin.org/get
+
+# Every Sunday at 3 AM
+sunday_maintenance:
+  trigger: "0 0 3 ? * SUN"
+  type: http
+  method: GET
+  url: https://httpbin.org/get
+
+# Twice daily (6 AM and 6 PM)
+twice_daily:
+  trigger: "0 0 6,18 * * ?"
+  type: http
+  method: GET
+  url: https://httpbin.org/get

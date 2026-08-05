@@ -1,0 +1,9 @@
+# Time-bounded maintenance
+seasonal_maintenance:
+  trigger: "0 0 1 * * ?"  # Daily at 1 AM
+  type: exec
+  command: ./scripts/samples/maintenance.sh
+  startDate: 1704067200000  # January 1, 2024
+  endDate: 1735689600000    # January 1, 2025
+  allowedEnvs:
+    - MAINTENANCE_MODE

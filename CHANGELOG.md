@@ -8,6 +8,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.2] - 2026-08-05
+
+JVM-compatibility hardening pass. No breaking changes for existing
+CronManager-on-Rust users. Every JVM sample DSL still loads
+unchanged; the JVM `application.yml` shape now fails loudly with a
+diagnostic that shows the fix.
+
+### Added
+
+- **JVM `application.yml` compat aliases** — the four JVM camelCase
+  field names (`configPath`, `appRootPath`, `allowedOrigins`,
+  `shellEnvironment`) bind to their Rust snake_case counterparts
+  via `#[serde(alias)]`.
+- **String-form `allowed_origins`** — the JVM comma-separated
+  string form is accepted in addition to the YAML list form.
+- **JVM Spring wrapper rejection** — pasting a JVM
+  `application.yml` verbatim (top-level `application:` / `spring:` /
+  `management:` / `logging:`) is caught at boot with a diagnostic
+  that names the wrapper and shows the inline fix.
+- **Actuator alias endpoints** — `GET /actuator/health` (aliased
+  to `/health`) and `GET /actuator/info`.
+- **Trailing-slash routes** — `GET /jobs/` and `GET /running/` now
+  work in addition to the no-slash form, matching JVM Spring's
+  auto-normalisation.
+- **Inbound request body cap wired** — `limits.max_request_bytes`
+  is now enforced via `tower_http::limit::RequestBodyLimitLayer`.
+  Bodies over the cap return `413 request_too_large`. (The field
+  was previously parsed but unused.)
+- **Boot-time diagnostic pass** — one INFO summary of every config
+  field at startup, plus WARNs for likely-footgun values
+  (`allowed_origins` containing `"*"`, disabled timeouts).
+- **Log-line grep parity with JVM** — per-DSL-file INFO on load,
+  per-group INFO summary, per-job scheduler INFO, per-attempt
+  DEBUG, per-retry WARN, success-after-retry INFO,
+  all-attempts-failed ERROR, ignore-failures WARN.
+- **mdBook: samples cookbook + JVM porting quickref** — two new
+  book pages covering every feature and every JVM field rename.
+- **JVM sample corpus in CI** — the upstream JVM `DSL/samples/**`
+  fixtures mirrored verbatim under `compat/dsl/` and parsed on
+  every build.
+
+### Changed — silent-drop hardening
+
+- `#[serde(deny_unknown_fields)]` on every config and DSL struct
+  (`AppConfig`, `Limits`, `DatabaseCfg`, DSL job). A typo like
+  `dslpath:` or `retryCoun: 3` is a hard load error, not a silent
+  no-op.
+- HTTP method whitelist enforced at load
+  (`GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS` only).
+- `trigger: true` explicitly rejected.
+
+### Fixed
+
+- `InvalidConfig` error variant replaces generic 500s when the
+  config file structurally can't load. Returns
+  `400 invalid_config`.
+
+### Tests
+
+- +7 tests in `tests/compat_parse.rs` (JVM sample corpus).
+- +10 tests in `tests/deny_unknown.rs` (silent-drop regressions).
+- +5 tests in `tests/router_integration.rs` (actuator aliases,
+  trailing-slash routes, `413` on oversized body).
+- +11 unit tests in `src/config.rs`.
+
+Total suite: **90 tests, 0 failures.**
+
 ## [0.1.0-alpha.1] - 2026-07-31
 
 Initial alpha. Rust reimplementation of the Spring Boot / Quartz
@@ -67,5 +134,6 @@ per the Buerostack `DEV-REQUIREMENTS.md` ruleset.
   `HANDOFF.md`, `SECURITY.md`, `STANDARDS.md`, `NOTICE`,
   `VERSION`, `deny.toml`, `.cargo/audit.toml`, `book/`, `tasks/`.
 
-[Unreleased]: https://github.com/turnerrainer/cronmanager/compare/v0.1.0-alpha.1...HEAD
+[Unreleased]: https://github.com/turnerrainer/cronmanager/compare/v0.1.0-alpha.2...HEAD
+[0.1.0-alpha.2]: https://github.com/turnerrainer/cronmanager/releases/tag/v0.1.0-alpha.2
 [0.1.0-alpha.1]: https://github.com/turnerrainer/cronmanager/releases/tag/v0.1.0-alpha.1

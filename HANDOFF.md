@@ -1,24 +1,23 @@
 # HANDOFF
 
-**Written**: 2026-07-31
-**Last verified green**: 2026-07-31 — cargo test 57/0/0 (39 unit
-+ 15 integration + 3 postgres-conditional skipped without DB);
-fmt + clippy `-D warnings` clean; cargo audit clean (1
-documented ignore, `RUSTSEC-2023-0071` in transitive `rsa` via
-`sqlx-postgres`, no upstream fix, mirrored to `deny.toml` with
-review date 2027-01-31); cargo deny check all clean; mdbook +
-linkcheck build clean; `v0.1.0-alpha.1` published via CI in
-44m56s (`turnerrainer/cronmanager:alpha` on Docker Hub + GHCR,
-digest `sha256:eb875b49013ff9663c6b424f2a4da297a1d956a63f1dff5d5411d24848cf97cf`);
-docker pull + `/health` smoke passed.
-**Branch**: `dev` — tagged `v0.1.0-alpha.1` and pushed. Book live
+**Written**: 2026-08-05
+**Last verified green**: 2026-08-05 — cargo test 90/0/0 (61 unit
++ 29 integration; 3 postgres-conditional skipped without DB); fmt
++ clippy `-D warnings` clean; mdbook + linkcheck build clean.
+`v0.1.0-alpha.2` builds locked with `cargo build --release --locked`.
+`v0.1.0-alpha.1` remains published on Docker Hub + GHCR
+(`turnerrainer/cronmanager:alpha`), digest
+`sha256:eb875b49013ff9663c6b424f2a4da297a1d956a63f1dff5d5411d24848cf97cf`.
+**Branch**: `dev` — tagged `v0.1.0-alpha.2` and pushed. Book live
 at <https://turnerrainer.github.io/cronmanager/>.
 
 ## What this repo IS today
 
 Working Rust reimplementation of the JVM CronManager. YAML DSL
 identical to the JVM version, so existing job files drop straight
-in.
+in. JVM `application.yml` camelCase field names accepted as
+`serde(alias)`; JVM Spring wrappers are rejected at boot with a
+diagnostic that shows the fix.
 
 - `POST /execute/{group}/{job}` — manual trigger of any scheduled
   or manual-only job
@@ -59,6 +58,8 @@ curl -s http://localhost:9010/jobs | head
 | 003 | `tasks/backlog/003-openapi-endpoint.md` | Auto-generated OpenAPI spec at `GET /api` |
 | 004 | `tasks/backlog/004-metrics-endpoint.md` | Prometheus `/metrics` (behind config flag) |
 | 005 | `tasks/backlog/005-graceful-reload.md` | Diff-based reload — currently `/reload` re-loads everything |
+| 006 | *(unfiled)* | Enrich `/actuator/info` with git-SHA + build-time via `vergen` |
+| 007 | *(unfiled)* | Per-schedule TZ context — scheduler currently evaluates in UTC only |
 
 ## Where to look for more detail
 

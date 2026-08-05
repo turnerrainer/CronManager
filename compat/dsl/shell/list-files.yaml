@@ -1,0 +1,5 @@
+# Directory listing
+list_files:
+  trigger: "0 0 8 * * ?"  # Daily at 8 AM
+  type: exec
+  command: ./scripts/samples/list_files.sh

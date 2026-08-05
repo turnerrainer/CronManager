@@ -1,0 +1,5 @@
+# System information gathering
+system_info:
+  trigger: "0 0 */6 * * ?"  # Every 6 hours
+  type: exec
+  command: ./scripts/samples/system_info.sh

@@ -1,0 +1,8 @@
+# Data processing with environment
+process_data:
+  trigger: "0 30 3 * * ?"  # Daily at 3:30 AM
+  type: exec
+  command: ./scripts/samples/process_data.sh
+  allowedEnvs:
+    - DATA_SOURCE
+    - OUTPUT_DIR

@@ -1,0 +1,9 @@
+# DELETE request example - fail hard on error
+cleanup_old_data:
+  trigger: "0 0 2 * * ?"  # Daily at 2 AM
+  type: http
+  method: DELETE
+  url: https://httpbin.org/delete
+  retryCount: 3
+  retryDelay: 5000
+  ignoreFailures: false  # Throw exception if all retries fail

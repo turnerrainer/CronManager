@@ -1,0 +1,9 @@
+# External service availability check
+external_service_check:
+  trigger: "0 */15 * * * ?"  # Every 15 minutes
+  type: http
+  method: GET
+  url: https://httpbin.org/delay/1
+  retryCount: 2
+  retryDelay: 5000
+  ignoreFailures: true

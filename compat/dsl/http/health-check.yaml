@@ -1,0 +1,9 @@
+# Simple GET request - Health check with retry
+health_check:
+  trigger: "0 */5 * * * ?"  # Every 5 minutes
+  type: http
+  method: GET
+  url: https://httpbin.org/status/200
+  retryCount: 3
+  retryDelay: 1000
+  ignoreFailures: true

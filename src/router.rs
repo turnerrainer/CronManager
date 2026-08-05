@@ -3,9 +3,11 @@
 //! Routes faithful to the JVM `CronController`:
 //!
 //! * `GET  /`
-//! * `GET  /health`
-//! * `GET  /jobs`, `GET /jobs/{group}`
-//! * `GET  /running`, `GET /running/{group}`
+//! * `GET  /health`         (native)
+//! * `GET  /actuator/health` (JVM URL, aliased to `/health`)
+//! * `GET  /actuator/info`   (JVM URL, minimal build-info body)
+//! * `GET  /jobs`, `GET /jobs/` (trailing slash), `GET /jobs/{group}`
+//! * `GET  /running`, `GET /running/` (trailing slash), `GET /running/{group}`
 //! * `POST /execute/{group}/{job}`
 //! * `POST /stop/{group}/{job}`
 //! * `POST /reload/{group}`
@@ -18,7 +20,7 @@ use crate::dsl::{loader, JobKey};
 use crate::error::CronManagerError;
 use crate::executor::DispatchExtras;
 use crate::scheduler::Scheduler;
-use axum::extract::{Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -26,6 +28,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::limit::RequestBodyLimitLayer;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -35,17 +38,33 @@ pub struct AppState {
 
 pub fn build(state: AppState) -> Router {
     let cors = build_cors(&state.cfg.allowed_origins);
+    let body_limit = state.cfg.limits.max_request_bytes;
     let mut router = Router::new()
         .route("/", get(index))
+        // /health is the native name; /actuator/health is the JVM
+        // URL kept for operators grepping the old Actuator path.
+        // Both return the same minimal body.
         .route("/health", get(health))
+        .route("/actuator/health", get(health))
+        .route("/actuator/info", get(info))
         .route("/jobs", get(jobs_all))
+        // JVM `CronController.java:31` mapped both `/jobs` and
+        // `/jobs/` — axum treats these as distinct so register
+        // both explicitly.
+        .route("/jobs/", get(jobs_all))
         .route("/jobs/:group", get(jobs_group))
         .route("/running", get(running_all))
+        .route("/running/", get(running_all))
         .route("/running/:group", get(running_group))
         .route("/execute/:group/:job", post(execute_job))
         .route("/stop/:group/:job", post(stop_job))
         .route("/reload/:group", post(reload_jobs))
-        .with_state(state);
+        .with_state(state)
+        // Wire `limits.max_request_bytes`. The default axum body
+        // limit is 2 MiB; disable it and apply ours so the
+        // operator's config wins.
+        .layer(DefaultBodyLimit::disable())
+        .layer(RequestBodyLimitLayer::new(body_limit));
     if let Some(cors) = cors {
         router = router.layer(cors);
     }
@@ -83,6 +102,16 @@ async fn index() -> impl IntoResponse {
 
 async fn health() -> impl IntoResponse {
     Json(json!({"status": "ok"}))
+}
+
+async fn info() -> impl IntoResponse {
+    // JVM Actuator returned build info populated by the Spring
+    // Boot plugin — Rust ships the CARGO_PKG_NAME/VERSION pair
+    // only. Git-SHA / build-time enrichment is a backlog item.
+    Json(json!({
+        "name": env!("CARGO_PKG_NAME"),
+        "version": env!("CARGO_PKG_VERSION"),
+    }))
 }
 
 async fn jobs_all(State(s): State<AppState>) -> Result<Json<Value>, CronManagerError> {

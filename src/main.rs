@@ -26,6 +26,10 @@ async fn main() -> anyhow::Result<()> {
         Some(p) => tracing::info!("loaded config from {}", p.display()),
         None => tracing::info!("using built-in defaults (no cronmanager.yaml found)"),
     }
+    // Boot-time diagnostic pass — a single INFO summary of every
+    // config field plus WARNs for values that would surprise an
+    // operator (e.g. `allowed_origins: ["*"]`, disabled timeouts).
+    cfg.boot_diagnostics();
 
     // History recorder: Postgres if a DSN is configured and
     // reachable, otherwise Noop.
@@ -76,17 +80,25 @@ async fn main() -> anyhow::Result<()> {
 
 /// Redact the password field of a Postgres URL for log lines —
 /// belt-and-braces defense against a config typo dumping the
-/// secret into the container log.
+/// secret into the container log. Handles both `postgres://` (the
+/// scheme we build) and `jdbc:postgresql://` (in case an operator
+/// pastes a JVM-style DSN while diagnosing).
 fn redact_password(dsn: &str) -> String {
-    if let Some(idx) = dsn.find("://") {
-        let (scheme, after) = dsn.split_at(idx + 3);
+    // Strip the `jdbc:` prefix if present so `://` splitting works
+    // on `jdbc:postgresql://host/db` as well as `postgres://…`.
+    let (prefix, rest) = match dsn.strip_prefix("jdbc:") {
+        Some(inner) => ("jdbc:", inner),
+        None => ("", dsn),
+    };
+    if let Some(idx) = rest.find("://") {
+        let (scheme, after) = rest.split_at(idx + 3);
         if let Some(at) = after.find('@') {
-            let (userinfo, rest) = after.split_at(at);
+            let (userinfo, tail) = after.split_at(at);
             let user = match userinfo.find(':') {
                 Some(i) => &userinfo[..i],
                 None => userinfo,
             };
-            return format!("{}{}:***{}", scheme, user, rest);
+            return format!("{}{}{}:***{}", prefix, scheme, user, tail);
         }
     }
     dsn.to_string()

@@ -1,0 +1,8 @@
+# Cleanup job
+cleanup_temp:
+  trigger: "0 0 */12 * * ?"  # Every 12 hours
+  type: exec
+  command: ./scripts/samples/cleanup.sh
+  allowedEnvs:
+    - TEMP_DIR
+    - MAX_AGE_DAYS
