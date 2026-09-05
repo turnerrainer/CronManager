@@ -280,12 +280,14 @@ dependencies = [
  "axum",
  "chrono",
  "cron",
+ "form_urlencoded",
  "mockito",
  "reqwest",
  "serde",
  "serde_json",
  "serde_yaml_ng",
  "sqlx",
+ "subtle",
  "tempfile",
  "thiserror",
  "tokio",
@@ -293,6 +295,7 @@ dependencies = [
  "tower-http 0.5.2",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 

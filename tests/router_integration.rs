@@ -26,10 +26,7 @@ async fn spawn_app() -> (String, Scheduler) {
     let bundle = ExecutorBundle::new(&cfg, Arc::new(NoopRecorder)).unwrap();
     let scheduler = Scheduler::new(bundle);
 
-    let state = AppState {
-        cfg: Arc::new(cfg),
-        scheduler: scheduler.clone(),
-    };
+    let state = AppState::new(Arc::new(cfg), scheduler.clone());
     let app = router::build(state);
 
     // OS-assigned port so tests can run in parallel without
@@ -312,10 +309,7 @@ async fn request_body_exceeding_limit_returns_413() {
     };
     let bundle = ExecutorBundle::new(&cfg, Arc::new(NoopRecorder)).unwrap();
     let scheduler = Scheduler::new(bundle);
-    let state = AppState {
-        cfg: Arc::new(cfg),
-        scheduler,
-    };
+    let state = AppState::new(Arc::new(cfg), scheduler);
     let app = router::build(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

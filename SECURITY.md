@@ -72,6 +72,40 @@ Every rule below is documented in [`STANDARDS.md`](./STANDARDS.md).
 
 ## Application-layer defensive posture
 
+- **Admin bearer-token gate on state-changing endpoints** —
+  `POST /execute`, `POST /stop`, and `POST /reload` require
+  `Authorization: Bearer <token>` when
+  `admin.bearer_token_env` resolves to a non-empty value. Compare
+  is constant-time (`subtle::ConstantTimeEq`). The process refuses
+  to start on a non-loopback bind without a token unless
+  `admin.trust_network=true`. Read-only endpoints stay open so
+  operator dashboards keep working.
+- **SSRF pre-flight on HTTP jobs** — literal private / loopback /
+  link-local / ULA IPs (IPv4, IPv6, IPv4-mapped IPv6) refused at
+  load; hostnames DNS-resolved at fire time and refused if any
+  returned address is non-routable. Reqwest redirects are
+  disabled so a legit upstream can't 302 the executor into a
+  metadata endpoint. Toggle: `security.block_private_networks`.
+- **Dangerous-env blacklist** on shell overrides —
+  `POST /execute?PATH=…` (and `LD_*`, `DYLD_*`, `PYTHONPATH`,
+  `NODE_OPTIONS`, `RUBYOPT`, `PERL5OPT`, `JAVA_TOOL_OPTIONS`,
+  …) return `403 forbidden` naming the offending key, even if
+  the job's `allowedEnvs` includes them. Toggle:
+  `security.allow_dangerous_env_overrides`.
+- **Bounded query string** on `/execute` — above
+  `security.max_query_params` (default 64) → `413`. Prevents the
+  `?a=1&b=2&…&z=1000000` memory-DoS lane.
+- **Log-injection defence** — captured shell stderr and non-2xx
+  HTTP response bodies are stripped of CR/LF/ANSI/control bytes
+  before landing in error strings that get logged.
+- **DSL load-time caps** — per-file `security.max_dsl_file_bytes`
+  (default 1 MiB) and `security.dsl_load_timeout_secs` (default
+  15s) kill the YAML anchor-bomb amplification lane.
+  `security.max_retry_count` (default 10) refuses DSLs that would
+  pin an executor slot indefinitely.
+- **`/reload` per-group throttle** — second reload for the same
+  group within `security.reload_min_interval_secs` (default 60s)
+  → `429 too_many_requests` with `retry_after_secs`.
 - **Request/response size caps** on every HTTP surface —
   `limits.max_request_bytes` (inbound REST) and
   `limits.max_response_bytes` (upstream HTTP responses captured
@@ -83,9 +117,10 @@ Every rule below is documented in [`STANDARDS.md`](./STANDARDS.md).
 - **Shell env allow-list** — `allowedEnvs` on each shell job
   whitelists which entries from `shell_environment` are exposed
   to the child process. Nothing leaks by default.
-- **No admin HTTP endpoints in the same process** as job APIs.
-  Any operational admin (metrics, remote pause, secrets rotation)
-  belongs at the infra layer per DEV-REQUIREMENTS §5.3.
+- **History row cap** — `response_body` truncated at
+  `security.stored_response_body_max_bytes` (default 64 KiB) with
+  a head+tail slice before insert, so a chatty upstream / script
+  can't bloat the hypertable indefinitely.
 - **Passwords come from env vars only.** `database.password_env`
   names the env var; a plain `password:` field is rejected at
   startup. No default password is ever shipped.
@@ -94,9 +129,9 @@ Every rule below is documented in [`STANDARDS.md`](./STANDARDS.md).
 
 - Secret fetching (Vault / KMS / Docker secrets) — operator
   responsibility; supply via env vars.
-- Authentication / authorisation on the REST API — terminate at
-  a reverse proxy.
-- Rate limiting — terminate at a reverse proxy.
+- Fine-grained authorisation on the REST API — the bearer gate is
+  all-or-nothing per token; role-based access belongs at a
+  reverse proxy or service mesh.
 - Persistent state / cross-replica coordination — Postgres is
   the shared substrate when history is enabled; job scheduling
   itself is single-instance.
