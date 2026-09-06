@@ -8,11 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4-alpha] - 2026-09-06
+
 Security hardening pass in response to the h2ck.me pre-publication
 audit (`../h2ck.me/projects/CronManager-on-Rust/v1/AUDIT.md`). All
-findings addressed. 156 tests pass (was 90); `cargo audit` clean;
-`cargo deny check` clean; `cargo clippy --all-targets -- -D warnings`
-clean; `mdbook build` + linkcheck clean.
+findings addressed and validated by h2ck.me
+(`v1/PR-REVIEWS/3-89bce00.md` — ✅ approve). 156 tests pass
+(was 90); `cargo audit` clean; `cargo deny check` clean;
+`cargo clippy --all-targets -- -D warnings` clean; `mdbook build`
++ linkcheck clean. Also bundles the Snyk-flagged runtime base
+image bump `debian:bookworm-slim` → `debian:13.6-slim` (PR #2).
+
+Version jump `0.1.0-alpha.3` → `0.1.4-alpha` is intentional
+(alignment with the fleet's shared version counter); no
+intermediate alpha tags exist.
 
 ### Added
 
@@ -240,7 +249,8 @@ per the Buerostack `DEV-REQUIREMENTS.md` ruleset.
   `HANDOFF.md`, `SECURITY.md`, `STANDARDS.md`, `NOTICE`,
   `VERSION`, `deny.toml`, `.cargo/audit.toml`, `book/`, `tasks/`.
 
-[Unreleased]: https://github.com/turnerrainer/cronmanager/compare/v0.1.0-alpha.3...HEAD
+[Unreleased]: https://github.com/turnerrainer/cronmanager/compare/v0.1.4-alpha...HEAD
+[0.1.4-alpha]: https://github.com/turnerrainer/cronmanager/releases/tag/v0.1.4-alpha
 [0.1.0-alpha.3]: https://github.com/turnerrainer/cronmanager/releases/tag/v0.1.0-alpha.3
 [0.1.0-alpha.2]: https://github.com/turnerrainer/cronmanager/releases/tag/v0.1.0-alpha.2
 [0.1.0-alpha.1]: https://github.com/turnerrainer/cronmanager/releases/tag/v0.1.0-alpha.1
