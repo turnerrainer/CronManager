@@ -86,3 +86,53 @@ curl -s http://localhost:9010/jobs | head
 | Full change history | [`./CHANGELOG.md`](./CHANGELOG.md) |
 | Private security disclosure | [`./SECURITY.md`](./SECURITY.md) |
 | CI workflows | [`.github/workflows/`](./.github/workflows/) |
+
+---
+
+## h2ck.me security-audit pipeline
+
+**Added**: 2026-09-06. Describes the ongoing pre-publication security audit + fix + review flow with the `h2ckme` private GitHub org. If you land in this repo cold and see an open `security/h2ck-audit-*` PR, start here.
+
+### What it is
+
+h2ck.me runs a versioned audit → fix → validate cycle against every Bürostack-fleet service before it goes public. Each round is a `vN/` folder in the corresponding private repo under [`github.com/h2ckme`](https://github.com/h2ckme):
+
+- `vN/AUDIT.md` — findings by severity, file:line pointers, attack scenarios.
+- `vN/FIX-KIT.md` — runnable attack sandbox, diff-shaped fix code, per-finding acceptance criteria.
+- `vN/PR-REVIEWS/<pr-number>-<head-sha7>.md` — one per PR reviewed (append-only across force-pushes).
+
+**Fleet-wide index** — [`h2ckme/security-fleet` → `REVIEW-INDEX.md`](https://github.com/h2ckme/security-fleet/blob/main/REVIEW-INDEX.md).
+
+### Where feedback lives (hybrid pipeline as of 2026-09-06)
+
+1. **The open v1 audit PR carries a comment** starting with `## h2ck.me v1 review`. It includes: verdict (✅ / ⚠️ / ❌), one-paragraph summary, link to the full write-up in h2ckme.
+2. **Full per-PR write-up** at [`h2ckme/CronManager-on-Rust/v1/PR-REVIEWS/`](https://github.com/h2ckme/CronManager-on-Rust/tree/main/v1/PR-REVIEWS).
+3. **Audit + fix-kit context**: [`h2ckme/CronManager-on-Rust/v1/AUDIT.md`](https://github.com/h2ckme/CronManager-on-Rust/blob/main/v1/AUDIT.md) + [`v1/FIX-KIT.md`](https://github.com/h2ckme/CronManager-on-Rust/blob/main/v1/FIX-KIT.md).
+
+**h2ckme access**: private org; your GitHub account has read via org membership. `git clone git@github.com:h2ckme/CronManager-on-Rust.git`.
+
+### Open v1 PR on this repo
+
+| PR | Branch | Findings | h2ck.me verdict |
+|---|---|---|---|
+| [#3](https://github.com/turnerrainer/CronManager/pull/3) | `security/h2ck-audit-v1-hardening` | C1 bearer gate, C2 query-param DoS, H1 SSRF + no-redirect, H2 log-injection sanitiser, H3 dangerous-env blacklist, H4 reload throttle, M1-M5 hardening | ✅ pass (11 findings, 156 tests / 0 failures, `cargo audit` + `cargo deny` + `clippy -D warnings` + `mdbook build` all clean) |
+
+### Standout in the fix
+
+The PR lands **`src/security.rs`** — a new cross-cutting shared primitives module (`is_dangerous_env`, `is_private_or_local`, `sanitize_for_log`, `truncate_response_body`). h2ck.me flagged this as the seed of a future workspace crate (`buerostack-security`) that would deduplicate the same primitives currently drifting across Ruuter, FileFerry, XTR, and TIM. See the review file for extraction notes.
+
+### Next action for a maintainer landing here
+
+1. **Open [PR #3](https://github.com/turnerrainer/CronManager/pull/3)** and read the `## h2ck.me v1 review` comment.
+2. Follow the link to the full write-up for the acceptance-marker table + break-the-fix probe results.
+3. **Merge** on your release cadence (verdict is ✅ pass; no blockers). The two unchecked test-plan boxes (container smoke, live sweep) are nice-to-haves — automated regressions already cover the wire-level behaviour.
+4. Bump `Cargo.toml` + `CHANGELOG.md`, tag, push image.
+5. **Wait ~2 weeks**, then h2ck.me opens `v2/` as an adversarial re-audit of the merged branch.
+
+### v2 backlog (from the review)
+
+Four items filed for the next iteration: `ReloadGate` LRU/time-based eviction (unbounded map growth under dynamic group names); `bind_is_loopback` completeness sweep (127.0.0.0/8, `localhost` hostname, `[::1]`, `::ffff:127.0.0.1`); H2 sanitiser applied at DB persist (not just log render); `src/security.rs` extraction to workspace crate.
+
+### h2ck.me does NOT touch this repo
+
+Explicit boundary: h2ck.me writes only to `h2ckme/*` (private org) + PR comment threads. It never pushes code, opens PRs, or edits files in `turnerrainer/*`. All fixes come from you or a fixer of your choice.
