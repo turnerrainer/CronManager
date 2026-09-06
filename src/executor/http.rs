@@ -1,6 +1,13 @@
 //! HTTP executor. One `reqwest::Client` per process, built with
 //! the configured timeout. Each attempt is bounded and streamed
 //! into a size-capped buffer.
+//!
+//! Redirects are DISABLED — see `AUDIT.md` finding H1. The
+//! rationale: a legitimate upstream can return `302 Location:
+//! http://169.254.169.254/…` and (without this) reqwest would
+//! silently follow into the AWS metadata endpoint. Jobs that
+//! legitimately want to follow a redirect can hit the destination
+//! URL directly.
 
 use crate::config::Limits;
 use crate::error::CronManagerError;
@@ -14,6 +21,7 @@ pub struct HttpExecutor {
     client: Client,
     max_response_bytes: usize,
     timeout: Duration,
+    block_private_networks: bool,
 }
 
 /// A single successful attempt.
@@ -25,15 +33,31 @@ pub struct HttpAttempt {
 
 impl HttpExecutor {
     pub fn new(limits: &Limits) -> Result<Self, CronManagerError> {
+        Self::with_ssrf_policy(limits, true)
+    }
+
+    /// Build the executor with an explicit SSRF policy. Split out
+    /// so the scheduler can wire in the `security.block_private_networks`
+    /// flag without leaking the whole `AppConfig` into the
+    /// executor. When true, [`execute`] resolves the URL host at
+    /// fire time and refuses to send if it resolves to a
+    /// non-routable IP.
+    pub fn with_ssrf_policy(
+        limits: &Limits,
+        block_private_networks: bool,
+    ) -> Result<Self, CronManagerError> {
         let timeout = Duration::from_secs(limits.request_timeout_secs);
         let client = Client::builder()
             .timeout(timeout)
+            // SSRF: never auto-follow. See module docs.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| CronManagerError::Internal(format!("reqwest client build: {e}")))?;
         Ok(Self {
             client,
             max_response_bytes: limits.max_response_bytes,
             timeout,
+            block_private_networks,
         })
     }
 
@@ -45,6 +69,15 @@ impl HttpExecutor {
     ) -> Result<HttpAttempt, CronManagerError> {
         let method = Method::from_bytes(method.to_uppercase().as_bytes())
             .map_err(|_| CronManagerError::Internal(format!("unknown HTTP method '{method}'")))?;
+
+        // SSRF fire-time re-check: hostnames are validated at
+        // load, but DNS can change between load and fire (TOCTOU).
+        // Re-resolve every host on every fire; refuse if any
+        // resolved address is non-routable. Literal-IP URLs got
+        // rejected at load if they were private.
+        if self.block_private_networks {
+            self.reject_private_dns(url).await?;
+        }
 
         tracing::debug!("HTTP {} {}", method, url);
         let send = self.client.request(method, url).send();
@@ -58,13 +91,66 @@ impl HttpExecutor {
 
         let status = resp.status().as_u16();
         let body = read_bounded(resp, self.max_response_bytes).await?;
+        // With redirects disabled, a 3xx response reaches us
+        // instead of being followed. Treat 3xx as an upstream
+        // error the same way we treat 5xx — the job author can
+        // spell out the destination URL if they meant to hit it.
         if !(200..300).contains(&status) {
+            // Sanitise before truncation — the body is
+            // attacker-controlled once you consider a legit
+            // upstream that returns whatever a caller shoves at
+            // it (e.g. a search API echoing the query). Any CRLF
+            // / ANSI here would land in tracing! via
+            // err.to_string() and downstream log viewers. See H2.
+            let sanitised = crate::security::sanitize_for_log(&body);
             return Err(CronManagerError::UpstreamHttpError {
                 status,
-                body: truncate(&body, 1024),
+                body: truncate(&sanitised, 1024),
             });
         }
         Ok(HttpAttempt { status, body })
+    }
+
+    /// Resolve the URL's host at fire time and refuse if any
+    /// returned address is in a non-routable range. Literal-IP
+    /// URLs pass through — the loader already rejected literal
+    /// private IPs.
+    async fn reject_private_dns(&self, url_str: &str) -> Result<(), CronManagerError> {
+        let parsed = url::Url::parse(url_str)
+            .map_err(|e| CronManagerError::Internal(format!("re-parsing url '{url_str}': {e}")))?;
+        let host = match parsed.host_str() {
+            Some(h) => h,
+            None => return Ok(()),
+        };
+        // Literal IP → loader already screened; the executor
+        // trusts it (removes redundant work in the hot path).
+        if host.parse::<std::net::IpAddr>().is_ok() {
+            return Ok(());
+        }
+        // Any port is fine for the resolution; we just want the
+        // addresses. Fall back to 80 when the URL omits one.
+        let port = parsed.port().unwrap_or(match parsed.scheme() {
+            "https" => 443,
+            _ => 80,
+        });
+        let target = format!("{host}:{port}");
+        let addrs = tokio::net::lookup_host(target.as_str())
+            .await
+            .map_err(|e| CronManagerError::Internal(format!("dns lookup {target}: {e}")))?;
+        for addr in addrs {
+            if crate::security::is_private_or_local(addr.ip()) {
+                tracing::warn!(
+                    host = %host,
+                    resolved = %addr.ip(),
+                    "http: SSRF pre-flight refused fire — hostname resolves to non-routable IP"
+                );
+                return Err(CronManagerError::BadRequest(format!(
+                    "hostname '{host}' resolves to non-routable IP {} (SSRF pre-flight); set security.block_private_networks=false to allow",
+                    addr.ip()
+                )));
+            }
+        }
+        Ok(())
     }
 
     fn map_send_err(&self, e: reqwest::Error) -> CronManagerError {
@@ -131,7 +217,10 @@ mod tests {
             .create_async()
             .await;
 
-        let exec = HttpExecutor::new(&Limits::default()).unwrap();
+        // SSRF policy off — mockito binds to 127.0.0.1 which the
+        // policy would otherwise reject. Loopback is used across
+        // the existing test suite so we opt out here.
+        let exec = HttpExecutor::with_ssrf_policy(&Limits::default(), false).unwrap();
         let attempt = exec
             .execute(
                 "GET",
@@ -154,7 +243,7 @@ mod tests {
             .create_async()
             .await;
 
-        let exec = HttpExecutor::new(&Limits::default()).unwrap();
+        let exec = HttpExecutor::with_ssrf_policy(&Limits::default(), false).unwrap();
         let err = exec
             .execute(
                 "GET",
@@ -184,7 +273,7 @@ mod tests {
             max_response_bytes: 1024,
             ..Limits::default()
         };
-        let exec = HttpExecutor::new(&limits).unwrap();
+        let exec = HttpExecutor::with_ssrf_policy(&limits, false).unwrap();
         let err = exec
             .execute(
                 "GET",
@@ -201,12 +290,70 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_method_errors_cleanly() {
-        let exec = HttpExecutor::new(&Limits::default()).unwrap();
+        let exec = HttpExecutor::with_ssrf_policy(&Limits::default(), false).unwrap();
         let err = exec
             .execute("FLOOP", "http://127.0.0.1:1", Arc::new(Notify::new()))
             .await
             .unwrap_err();
         assert!(matches!(err, CronManagerError::Internal(_)));
+    }
+
+    #[tokio::test]
+    async fn redirect_is_not_followed() {
+        // Upstream returns 302 to a second URL; we must NEVER
+        // reach the second URL. Redirect policy is `none`, so
+        // the 302 comes back to us as an upstream error status.
+        let mut redirector = mockito::Server::new_async().await;
+        let _dst = redirector
+            .mock("GET", "/dst")
+            .with_status(200)
+            .with_body("would leak")
+            .expect(0)
+            .create_async()
+            .await;
+        let _src = redirector
+            .mock("GET", "/src")
+            .with_status(302)
+            .with_header("location", &format!("{}/dst", redirector.url()))
+            .create_async()
+            .await;
+
+        let exec = HttpExecutor::with_ssrf_policy(&Limits::default(), false).unwrap();
+        let err = exec
+            .execute(
+                "GET",
+                &format!("{}/src", redirector.url()),
+                Arc::new(Notify::new()),
+            )
+            .await
+            .unwrap_err();
+        match err {
+            CronManagerError::UpstreamHttpError { status, .. } => {
+                assert_eq!(status, 302, "expected the 302 to reach us un-followed");
+            }
+            other => panic!("expected upstream 302, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn ssrf_pre_flight_refuses_private_hostname_dns() {
+        // localhost resolves to 127.0.0.1 (and possibly ::1) —
+        // both are private. Pre-flight must reject before any
+        // network write happens.
+        let exec = HttpExecutor::with_ssrf_policy(&Limits::default(), true).unwrap();
+        let err = exec
+            .execute(
+                "GET",
+                "http://localhost:1/whatever",
+                Arc::new(Notify::new()),
+            )
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("SSRF pre-flight") && msg.contains("localhost"),
+            "got: {msg}"
+        );
     }
 
     #[test]

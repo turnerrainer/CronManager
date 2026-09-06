@@ -51,7 +51,7 @@ async fn record_and_read_back_a_row() {
         eprintln!("skipping: CRONMANAGER_TEST_DATABASE_URL not set");
         return;
     };
-    let recorder = PostgresRecorder::connect(&dsn)
+    let recorder = PostgresRecorder::connect(&dsn, 65_536)
         .await
         .expect("connect + migrate");
     let entry = sample_entry("row_read_back");
@@ -75,10 +75,10 @@ async fn migrations_are_idempotent() {
     };
     // Two connects → migrate() runs twice; second run must be a
     // no-op. If migrations aren't idempotent, this panics.
-    let _first = PostgresRecorder::connect(&dsn)
+    let _first = PostgresRecorder::connect(&dsn, 65_536)
         .await
         .expect("first connect");
-    let _second = PostgresRecorder::connect(&dsn)
+    let _second = PostgresRecorder::connect(&dsn, 65_536)
         .await
         .expect("second connect");
 }
@@ -89,7 +89,7 @@ async fn every_status_variant_persists() {
         eprintln!("skipping: CRONMANAGER_TEST_DATABASE_URL not set");
         return;
     };
-    let recorder = PostgresRecorder::connect(&dsn).await.unwrap();
+    let recorder = PostgresRecorder::connect(&dsn, 65_536).await.unwrap();
     for (name, status) in [
         ("status_success", ExecutionStatus::Success),
         ("status_failed", ExecutionStatus::Failed),

@@ -48,6 +48,38 @@ database:
 | `limits.shell_timeout_secs` | integer | `300` | Shell job wall-clock cap. Overrun → SIGKILL + `TIMEOUT` history entry. `0` disables the cap (a WARN is emitted at boot). |
 | `database.url` | connection string | *(unset)* | PostgreSQL/TimescaleDB DSN without credentials. When unset, execution history is disabled. |
 | `database.password_env` | env var name | `CRONMANAGER_DB_PASSWORD` | Env var to read the DB password from. Startup refuses if `database.url` is set but the env var is missing. |
+| `admin.bearer_token_env` | env var name | `CRONMANAGER_ADMIN_TOKEN` | Env var containing the bearer token that gates `POST /execute`, `POST /stop`, `POST /reload`. Empty/unset → gate disabled. |
+| `admin.trust_network` | bool | `false` | Skip the boot-time refusal to start on a non-loopback bind without a token. Only safe when a reverse proxy / service mesh authenticates every request before it reaches this process. |
+| `security.block_private_networks` | bool | `true` | Refuse HTTP job URLs whose host is a private / loopback / link-local / ULA IP, both at load (literal IPs) and at fire time (DNS resolution). |
+| `security.allow_dangerous_env_overrides` | bool | `false` | Bypass the shell dangerous-env blacklist (`PATH`, `LD_*`, `DYLD_*`, `PYTHONPATH`, `NODE_OPTIONS`, …). |
+| `security.max_query_params` | integer | `64` | Cap on the number of `?k=v` pairs on `POST /execute/…`. Overflow → `413 too_many_query_params`. |
+| `security.max_dsl_file_bytes` | integer | `1048576` (1 MiB) | Per-file cap on YAML DSL size, refused at load with a diagnostic that names the file. |
+| `security.dsl_load_timeout_secs` | integer | `15` | Wall-clock cap on `load_all`. Above → boot / reload aborts with a `dsl load exceeded …s` error. |
+| `security.max_retry_count` | integer | `10` | Cap on the `retryCount` DSL field. Above → load rejected. WARN emitted at `retryCount > 5`. |
+| `security.min_cron_interval_secs` | integer | `10` | WARN if a cron expression fires more often than this. `0` disables the warning. |
+| `security.stored_response_body_max_bytes` | integer | `65536` (64 KiB) | Cap on `response_body` per history row. Above → head+tail slice with an inline truncation marker. |
+| `security.reload_min_interval_secs` | integer | `60` | Minimum seconds between two `POST /reload/…` calls for the same group. Above → `429 too_many_requests`. `0` disables the throttle. |
+
+### Security posture
+
+Zero-config on loopback stays open (the gate short-circuits when
+no token is set) so `docker run -p 127.0.0.1:8080:8080` still gives
+you the JVM-like local dev experience. Bind to `0.0.0.0` without a
+token and the process refuses to start with:
+
+```
+Error: refusing to start on non-loopback bind 0.0.0.0:8080 without
+  an admin token: set env var CRONMANAGER_ADMIN_TOKEN to enable the
+  /execute + /stop + /reload gate, or set admin.trust_network=true
+  if a reverse proxy / service mesh authenticates every request
+  before it reaches this process
+```
+
+Callers present the token as `Authorization: Bearer <token>`. The
+comparison is constant-time (`subtle::ConstantTimeEq`) and the
+scheme name is case-insensitive per RFC 6750 §2.1. Read-only
+endpoints (`/health`, `/jobs`, `/running`, `/actuator/*`) stay open
+so operator dashboards keep working.
 
 ### Unknown fields are hard errors
 

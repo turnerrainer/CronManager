@@ -49,7 +49,10 @@ impl ExecutorBundle {
         history: Arc<dyn HistoryRecorder>,
     ) -> Result<Self, CronManagerError> {
         Ok(Self {
-            http: http::HttpExecutor::new(&cfg.limits)?,
+            http: http::HttpExecutor::with_ssrf_policy(
+                &cfg.limits,
+                cfg.security.block_private_networks,
+            )?,
             shell: shell::ShellExecutor::new(cfg),
             history,
         })

@@ -125,12 +125,18 @@ impl ShellExecutor {
                 stdout: String::from_utf8_lossy(&stdout_bytes).into_owned(),
             })
         } else {
+            // stderr may contain attacker-controlled bytes if the
+            // script called `curl attacker.com` and echoed the
+            // response — sanitize before splicing into the error
+            // string so CRLF / ANSI escapes can't hop into logs
+            // via the eventual tracing! call. See H2.
             let stderr_text = String::from_utf8_lossy(&stderr_bytes);
+            let sanitised = crate::security::sanitize_for_log(&stderr_text);
             Err(CronManagerError::ShellFailed {
                 message: format!(
                     "exit {}: {}",
                     exit_status.code().unwrap_or(-1),
-                    truncate(&stderr_text, 512)
+                    truncate(&sanitised, 512)
                 ),
             })
         }

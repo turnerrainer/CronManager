@@ -28,8 +28,20 @@ async fn main() -> anyhow::Result<()> {
     }
     // Boot-time diagnostic pass — a single INFO summary of every
     // config field plus WARNs for values that would surprise an
-    // operator (e.g. `allowed_origins: ["*"]`, disabled timeouts).
+    // operator (e.g. `allowed_origins: ["*"]`, disabled timeouts,
+    // missing admin token, permissive SSRF posture).
     cfg.boot_diagnostics();
+
+    let bind = format!("0.0.0.0:{}", cfg.port);
+    let admin_token = cfg.resolve_admin_token();
+    // Refuse-to-start check: if the bind is non-loopback AND
+    // there's no admin token AND the operator hasn't opted out
+    // via `admin.trust_network=true`, abort with an error that
+    // names the env var + the bind so the fix is obvious. See
+    // src/router.rs::refuse_to_start_without_token.
+    if let Err(msg) = router::refuse_to_start_without_token(&cfg, &bind, admin_token.is_some()) {
+        return Err(anyhow::anyhow!(msg));
+    }
 
     // History recorder: Postgres if a DSN is configured and
     // reachable, otherwise Noop.
@@ -37,7 +49,8 @@ async fn main() -> anyhow::Result<()> {
         Some(dsn) => {
             let redacted = redact_password(&dsn);
             tracing::info!("history: connecting to {}", redacted);
-            match PostgresRecorder::connect(&dsn).await {
+            match PostgresRecorder::connect(&dsn, cfg.security.stored_response_body_max_bytes).await
+            {
                 Ok(r) => {
                     tracing::info!("history: enabled (migrations applied)");
                     Arc::new(r)
@@ -60,20 +73,28 @@ async fn main() -> anyhow::Result<()> {
     let bundle = ExecutorBundle::new(&cfg, history)?;
     let scheduler = Scheduler::new(bundle);
 
-    let jobs = loader::load_all(&cfg.dsl_path)?;
+    let jobs = loader::load_all_bounded(
+        &cfg.dsl_path,
+        cfg.security.max_dsl_file_bytes,
+        std::time::Duration::from_secs(cfg.security.dsl_load_timeout_secs),
+        cfg.security.max_retry_count,
+        cfg.security.min_cron_interval_secs,
+        cfg.security.block_private_networks,
+    )
+    .await?;
     let job_count = jobs.len();
     scheduler.register_all(jobs.into_iter().map(|j| j.spec));
     tracing::info!("scheduler: {} job(s) registered", job_count);
 
-    let state = router::AppState {
-        cfg: Arc::new(cfg.clone()),
-        scheduler,
-    };
+    let cfg_arc = Arc::new(cfg);
+    let mut state = router::AppState::new(cfg_arc.clone(), scheduler);
+    if let Some(token) = admin_token {
+        state = state.with_admin_token(token);
+    }
     let app = router::build(state);
 
-    let addr = format!("0.0.0.0:{}", cfg.port);
-    tracing::info!("listening on {}", addr);
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    tracing::info!("listening on {}", bind);
+    let listener = tokio::net::TcpListener::bind(&bind).await?;
     axum::serve(listener, app).await?;
     Ok(())
 }

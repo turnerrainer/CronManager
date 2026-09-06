@@ -54,6 +54,20 @@ pub struct AppConfig {
     #[serde(default)]
     pub limits: Limits,
 
+    /// Admin auth for state-changing endpoints (`/execute`,
+    /// `/stop`, `/reload`). Default posture is loopback-only:
+    /// binding to a non-loopback address without a bearer token
+    /// (and without `admin.trust_network=true`) is refused at boot.
+    /// See book/src/security.md.
+    #[serde(default)]
+    pub admin: AdminConfig,
+
+    /// Security hardening knobs — SSRF/DoS defence-in-depth. Every
+    /// field ships with a safe default; overrides exist for
+    /// operators who really need them (with a boot-time WARN).
+    #[serde(default)]
+    pub security: SecurityConfig,
+
     /// Optional persistence. Absent → NoopRecorder (history
     /// disabled, jobs still run).
     #[serde(default)]
@@ -86,6 +100,134 @@ impl Default for Limits {
             max_response_bytes: default_max_response_bytes(),
             request_timeout_secs: default_request_timeout_secs(),
             shell_timeout_secs: default_shell_timeout_secs(),
+        }
+    }
+}
+
+/// Admin bearer-token gate. Applied to every state-changing
+/// endpoint (`/execute`, `/stop`, `/reload`) when a token is
+/// configured. Read-only endpoints (`/health`, `/jobs`, …) stay
+/// unauthenticated so operator dashboards keep working.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdminConfig {
+    /// Env var name to read the bearer token from at boot. Empty
+    /// or unset env var → no token configured. Default:
+    /// `CRONMANAGER_ADMIN_TOKEN`.
+    #[serde(default = "default_admin_token_env", alias = "bearerTokenEnv")]
+    pub bearer_token_env: String,
+
+    /// Opt-out for private-network / mesh-authenticated
+    /// deployments. When true, the boot-time refusal to start on a
+    /// non-loopback bind without a token is skipped. Logged as a
+    /// WARN so operators notice.
+    #[serde(default, alias = "trustNetwork")]
+    pub trust_network: bool,
+}
+
+impl Default for AdminConfig {
+    fn default() -> Self {
+        Self {
+            bearer_token_env: default_admin_token_env(),
+            trust_network: false,
+        }
+    }
+}
+
+/// Security hardening knobs. Defaults are safe; overrides are
+/// per-field so an operator can loosen a single control without
+/// silently loosening everything.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SecurityConfig {
+    /// SSRF: refuse HTTP job URLs whose host is a private,
+    /// loopback, link-local, ULA, or otherwise non-routable IP.
+    /// Applied at DSL load time (literal IPs) AND at fire time
+    /// (hostname DNS resolution). Default: true.
+    #[serde(default = "default_true", alias = "blockPrivateNetworks")]
+    pub block_private_networks: bool,
+
+    /// Bypass the shell dangerous-env blacklist (`PATH`, `LD_*`,
+    /// `DYLD_*`, `PYTHONPATH`, `NODE_OPTIONS`, …). Only enable if
+    /// you deliberately need one of those vars overridable via
+    /// `/execute?…` query string. WARN at boot when true.
+    #[serde(default, alias = "allowDangerousEnvOverrides")]
+    pub allow_dangerous_env_overrides: bool,
+
+    /// Cap on the number of query parameters accepted by
+    /// `POST /execute/…`. Above the cap → 413. A shell job
+    /// legitimately needs a handful; the cap kills the
+    /// `?a=1&b=2&…` memory-DoS lane without hurting real users.
+    /// Default: 64.
+    #[serde(default = "default_max_query_params", alias = "maxQueryParams")]
+    pub max_query_params: usize,
+
+    /// Per-file cap on DSL YAML size, in bytes. Files above the
+    /// cap are refused at load with a diagnostic that names the
+    /// file + byte count. Kills the YAML anchor-bomb amplification
+    /// vector. Default: 1 MiB.
+    #[serde(default = "default_max_dsl_file_bytes", alias = "maxDslFileBytes")]
+    pub max_dsl_file_bytes: u64,
+
+    /// Overall wall-clock cap on `loader::load_all`, in seconds.
+    /// The per-file byte cap is the main defence; this timeout is
+    /// belt-and-braces against an unforeseen amplification in
+    /// `serde_yaml_ng`. Default: 15s.
+    #[serde(
+        default = "default_dsl_load_timeout_secs",
+        alias = "dslLoadTimeoutSecs"
+    )]
+    pub dsl_load_timeout_secs: u64,
+
+    /// Cap on the `retryCount` DSL field. Retries above the cap
+    /// are refused at load. Default: 10 (WARN above 5). Protects
+    /// against a misconfigured `retryCount: 4294967295` pinning
+    /// an executor slot for hours.
+    #[serde(default = "default_max_retry_count", alias = "maxRetryCount")]
+    pub max_retry_count: u32,
+
+    /// Minimum acceptable interval between two consecutive cron
+    /// fires. Jobs whose expression fires more often than this
+    /// emit a WARN at load. Set to 0 to disable. Default: 10s.
+    #[serde(
+        default = "default_min_cron_interval_secs",
+        alias = "minCronIntervalSecs"
+    )]
+    pub min_cron_interval_secs: i64,
+
+    /// Cap on the bytes of `response_body` (HTTP) / stdout (shell)
+    /// stored in the history table. Above the cap → head+tail
+    /// slice with an inline truncation marker. Prevents unbounded
+    /// row growth on chatty upstreams / scripts. Default: 64 KiB.
+    #[serde(
+        default = "default_stored_response_body_max_bytes",
+        alias = "storedResponseBodyMaxBytes"
+    )]
+    pub stored_response_body_max_bytes: usize,
+
+    /// Minimum seconds between two `POST /reload/…` calls for the
+    /// same group. Second request within the window → 429. Legit
+    /// ops workflows reload once per commit; the cap kills the
+    /// `/reload` flood amplifier for load-time bugs. Default: 60s.
+    #[serde(
+        default = "default_reload_min_interval_secs",
+        alias = "reloadMinIntervalSecs"
+    )]
+    pub reload_min_interval_secs: u64,
+}
+
+impl Default for SecurityConfig {
+    fn default() -> Self {
+        Self {
+            block_private_networks: true,
+            allow_dangerous_env_overrides: false,
+            max_query_params: default_max_query_params(),
+            max_dsl_file_bytes: default_max_dsl_file_bytes(),
+            dsl_load_timeout_secs: default_dsl_load_timeout_secs(),
+            max_retry_count: default_max_retry_count(),
+            min_cron_interval_secs: default_min_cron_interval_secs(),
+            stored_response_body_max_bytes: default_stored_response_body_max_bytes(),
+            reload_min_interval_secs: default_reload_min_interval_secs(),
         }
     }
 }
@@ -130,6 +272,33 @@ fn default_shell_timeout_secs() -> u64 {
 fn default_password_env() -> String {
     "CRONMANAGER_DB_PASSWORD".to_string()
 }
+fn default_admin_token_env() -> String {
+    "CRONMANAGER_ADMIN_TOKEN".to_string()
+}
+fn default_true() -> bool {
+    true
+}
+fn default_max_query_params() -> usize {
+    64
+}
+fn default_max_dsl_file_bytes() -> u64 {
+    1_048_576
+}
+fn default_dsl_load_timeout_secs() -> u64 {
+    15
+}
+fn default_max_retry_count() -> u32 {
+    10
+}
+fn default_min_cron_interval_secs() -> i64 {
+    10
+}
+fn default_stored_response_body_max_bytes() -> usize {
+    65_536
+}
+fn default_reload_min_interval_secs() -> u64 {
+    60
+}
 
 impl Default for AppConfig {
     fn default() -> Self {
@@ -140,6 +309,8 @@ impl Default for AppConfig {
             allowed_origins: Vec::new(),
             shell_environment: BTreeMap::new(),
             limits: Limits::default(),
+            admin: AdminConfig::default(),
+            security: SecurityConfig::default(),
             database: None,
         }
     }
@@ -181,6 +352,16 @@ impl AppConfig {
         Ok(Some(splice_password(&db.url, &password)))
     }
 
+    /// Read the admin bearer token from the env var named in
+    /// `admin.bearer_token_env`. `None` when the env var is unset
+    /// or empty. Called once at boot; the resulting `Option<String>`
+    /// is stashed in `AppState` for the middleware.
+    pub fn resolve_admin_token(&self) -> Option<String> {
+        std::env::var(&self.admin.bearer_token_env)
+            .ok()
+            .filter(|s| !s.is_empty())
+    }
+
     /// Emit one INFO-level diagnostic line per config field that
     /// meaningfully differs from a "fresh install" baseline, and
     /// one WARN per field that is parsed-but-unwired or set to a
@@ -220,6 +401,41 @@ impl AppConfig {
         if self.database.is_none() {
             tracing::info!(
                 "config: history persistence disabled (no `database.url` set); job execution rows are logged at DEBUG only"
+            );
+        }
+
+        // Security-posture diagnostics — mirror the ones from the
+        // limits block so an operator sees the full picture in a
+        // single boot dump.
+        let token_present = self.resolve_admin_token().is_some();
+        tracing::info!(
+            "security: admin_token={} trust_network={} block_private_networks={} allow_dangerous_env_overrides={} max_query_params={} reload_min_interval_secs={}",
+            token_present,
+            self.admin.trust_network,
+            self.security.block_private_networks,
+            self.security.allow_dangerous_env_overrides,
+            self.security.max_query_params,
+            self.security.reload_min_interval_secs,
+        );
+        if !token_present {
+            tracing::warn!(
+                "security: admin bearer token not configured — state-changing endpoints /execute, /stop, /reload are UNAUTHENTICATED. Set env {} for the token, or admin.trust_network=true if the deployment authenticates at a reverse proxy or service mesh.",
+                self.admin.bearer_token_env,
+            );
+        }
+        if self.admin.trust_network {
+            tracing::warn!(
+                "security: admin.trust_network=true — the boot-time refusal to start on non-loopback binds without a token is DISABLED. Only safe if a reverse proxy / service mesh authenticates every request BEFORE it reaches this process."
+            );
+        }
+        if !self.security.block_private_networks {
+            tracing::warn!(
+                "security: block_private_networks=false — HTTP jobs may target link-local (169.254.0.0/16), loopback, private (RFC-1918), or ULA addresses. This re-enables the SSRF lane against cloud metadata endpoints."
+            );
+        }
+        if self.security.allow_dangerous_env_overrides {
+            tracing::warn!(
+                "security: allow_dangerous_env_overrides=true — shell env override blacklist (PATH, LD_*, DYLD_*, PYTHONPATH, NODE_OPTIONS, …) is DISABLED. Any allow-listed dangerous var can be set from /execute query params."
             );
         }
     }
@@ -329,6 +545,33 @@ fn percent_encode(s: &str) -> String {
         }
     }
     out
+}
+
+/// Classify a listen host string as loopback / non-loopback. Used
+/// by the boot-time refuse-to-start check: a non-loopback bind
+/// with no admin token AND `trust_network=false` is refused with a
+/// diagnostic that names the env var and the address. Anything the
+/// parser can't classify is treated as non-loopback (fail-safe).
+pub fn bind_is_loopback(bind: &str) -> bool {
+    let host = if let Some(rest) = bind.strip_prefix('[') {
+        // IPv6 literal in `[::1]:8080` shape.
+        rest.split(']').next().unwrap_or("").to_string()
+    } else {
+        // Take everything before the last `:` — leaves the host
+        // part intact when the bind is `host:port`. Bare host
+        // (no port) is used as-is.
+        match bind.rsplit_once(':') {
+            Some((h, _p)) => h.to_string(),
+            None => bind.to_string(),
+        }
+    };
+    if host.is_empty() || host == "*" {
+        return false;
+    }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return ip.is_loopback();
+    }
+    matches!(host.as_str(), "localhost")
 }
 
 fn config_search_paths() -> Vec<PathBuf> {
@@ -522,6 +765,82 @@ mod tests {
         cfg.allowed_origins.push("*".into());
         cfg.limits.request_timeout_secs = 0;
         cfg.limits.shell_timeout_secs = 0;
+        cfg.security.block_private_networks = false;
+        cfg.security.allow_dangerous_env_overrides = true;
+        cfg.admin.trust_network = true;
         cfg.boot_diagnostics();
+    }
+
+    #[test]
+    fn security_defaults_are_safe() {
+        // Regression pin: SSRF block and dangerous-env blacklist
+        // both on by default, so a zero-config deploy is safe.
+        let cfg = AppConfig::default();
+        assert!(cfg.security.block_private_networks);
+        assert!(!cfg.security.allow_dangerous_env_overrides);
+        assert_eq!(cfg.security.max_query_params, 64);
+        assert_eq!(cfg.security.max_dsl_file_bytes, 1_048_576);
+        assert_eq!(cfg.security.max_retry_count, 10);
+        assert_eq!(cfg.security.reload_min_interval_secs, 60);
+    }
+
+    #[test]
+    fn admin_defaults_use_conventional_env_var() {
+        let cfg = AppConfig::default();
+        assert_eq!(cfg.admin.bearer_token_env, "CRONMANAGER_ADMIN_TOKEN");
+        assert!(!cfg.admin.trust_network);
+    }
+
+    #[test]
+    fn bind_is_loopback_recognises_ipv4_loopback() {
+        assert!(bind_is_loopback("127.0.0.1:8080"));
+        assert!(bind_is_loopback("127.1.2.3:8080"));
+    }
+
+    #[test]
+    fn bind_is_loopback_recognises_ipv6_loopback() {
+        assert!(bind_is_loopback("[::1]:8080"));
+    }
+
+    #[test]
+    fn bind_is_loopback_accepts_localhost() {
+        assert!(bind_is_loopback("localhost:8080"));
+    }
+
+    #[test]
+    fn bind_is_loopback_rejects_wildcard() {
+        assert!(!bind_is_loopback("0.0.0.0:8080"));
+        assert!(!bind_is_loopback("[::]:8080"));
+        assert!(!bind_is_loopback("*:8080"));
+    }
+
+    #[test]
+    fn bind_is_loopback_rejects_public_ip() {
+        assert!(!bind_is_loopback("10.0.0.1:8080"));
+        assert!(!bind_is_loopback("1.2.3.4:8080"));
+    }
+
+    #[test]
+    fn resolve_admin_token_reads_env_var() {
+        // Random name so parallel-test runs don't collide on the
+        // process-wide env table.
+        let key = format!("CRONMANAGER_TEST_ADMIN_{}", std::process::id());
+        let cfg = AppConfig {
+            admin: AdminConfig {
+                bearer_token_env: key.clone(),
+                trust_network: false,
+            },
+            ..AppConfig::default()
+        };
+        std::env::remove_var(&key);
+        assert!(cfg.resolve_admin_token().is_none());
+        std::env::set_var(&key, "");
+        assert!(
+            cfg.resolve_admin_token().is_none(),
+            "empty env must be treated as unset"
+        );
+        std::env::set_var(&key, "s3cret");
+        assert_eq!(cfg.resolve_admin_token().as_deref(), Some("s3cret"));
+        std::env::remove_var(&key);
     }
 }

@@ -8,6 +8,93 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Security hardening pass in response to the h2ck.me pre-publication
+audit (`../h2ck.me/projects/CronManager-on-Rust/v1/AUDIT.md`). All
+findings addressed. 156 tests pass (was 90); `cargo audit` clean;
+`cargo deny check` clean; `cargo clippy --all-targets -- -D warnings`
+clean; `mdbook build` + linkcheck clean.
+
+### Added
+
+- **`admin` config block** — bearer-token gate on
+  `POST /execute`, `POST /stop`, `POST /reload`. Token comes from
+  the env var named by `admin.bearer_token_env`
+  (default `CRONMANAGER_ADMIN_TOKEN`). Constant-time comparison
+  via `subtle::ConstantTimeEq`. Case-insensitive scheme name per
+  RFC 6750. Read-only endpoints (`/health`, `/jobs`, `/running`,
+  `/actuator/*`) stay open. `admin.trust_network=true` disables
+  the boot-time refusal to start on non-loopback binds without a
+  token. (Finding C1.)
+- **`security` config block** — every hardening cap is
+  operator-tunable, and every cap emits a WARN at boot if
+  loosened from the default. Fields: `block_private_networks`,
+  `allow_dangerous_env_overrides`, `max_query_params`,
+  `max_dsl_file_bytes`, `dsl_load_timeout_secs`, `max_retry_count`,
+  `min_cron_interval_secs`, `stored_response_body_max_bytes`,
+  `reload_min_interval_secs`.
+- **Bounded query-string extractor** — `POST /execute/…` refuses
+  requests with more than `security.max_query_params` pairs
+  (default 64). Structured `413` naming the count + cap.
+  (Finding C2.)
+- **SSRF pre-flight** — HTTP job URLs are refused at load if the
+  host is a literal private / loopback / link-local / ULA IP
+  (IPv4, IPv6, and IPv4-mapped IPv6). At fire time, hostnames
+  are DNS-resolved and refused if any returned address is
+  non-routable. Reqwest redirects are DISABLED so a legit upstream
+  can't 302 the executor into a metadata endpoint.
+  (Finding H1.)
+- **Log-injection sanitiser** — captured shell stderr / non-2xx
+  HTTP response bodies are stripped of CR/LF/ANSI/control bytes
+  before landing in error strings that get logged. Cap at 4 KiB
+  per log stanza. DB rows retain a larger head+tail slice via
+  `truncate_response_body`. (Finding H2.)
+- **Dangerous-env blacklist** — `/execute` refuses env overrides
+  for `PATH`, `LD_*`, `DYLD_*`, `PYTHONPATH`, `NODE_OPTIONS`,
+  `RUBYOPT`, `PERL5OPT`, `JAVA_TOOL_OPTIONS`, and the loader-hook
+  families. Case-insensitive. Response is `403 forbidden` naming
+  the offending key. (Finding H3.)
+- **`/reload` per-group throttle** — second reload within
+  `security.reload_min_interval_secs` for the same group returns
+  `429 too_many_requests` with `retry_after_secs`. (Finding H4.)
+- **DSL file-size cap + load wall-clock timeout** — per-file YAML
+  refused at load if bigger than `security.max_dsl_file_bytes`
+  (default 1 MiB). Full walk wrapped in a `tokio::time::timeout`
+  under `spawn_blocking`, default 15s. (Finding M1.)
+- **retryCount cap** — DSL with `retryCount >
+  security.max_retry_count` rejected at load. WARN above 5.
+  (Finding M2.)
+- **High-frequency cron WARN** — jobs whose next two fires are
+  less than `security.min_cron_interval_secs` apart emit a WARN
+  at load naming the job + interval. (Finding M3.)
+- **Override audit log** — INFO log per `/execute` call lists the
+  applied override KEYS (never values). (Finding M4.)
+- **History row body truncation** — `response_body` capped at
+  `security.stored_response_body_max_bytes` (default 64 KiB) per
+  row via head+tail slice with an inline marker. New migration
+  adds a compound `(job_group, job_name, execution_time DESC)`
+  index. (Finding M5.)
+
+### Fixed
+
+- Reqwest client no longer follows redirects (was up to 10 by
+  default). See the SSRF pre-flight addition.
+- HTTP upstream error bodies were logged verbatim including
+  attacker-controlled CRLF / ANSI. Now sanitised.
+
+### Migration
+
+Existing operators on loopback / private-network deployments need
+no changes — the gate short-circuits when no token is configured
+and every new default is safe. Public / internet-exposed
+deployments now MUST either:
+
+1. Set `CRONMANAGER_ADMIN_TOKEN` and pass
+   `Authorization: Bearer <token>` on every state-changing call, or
+2. Set `admin.trust_network=true` if a reverse proxy / service
+   mesh authenticates every request before it reaches the process.
+
+Otherwise the process refuses to start with an explanatory error.
+
 ## [0.1.0-alpha.3] - 2026-08-05
 
 CI housekeeping. No product changes — same binary behaviour, same

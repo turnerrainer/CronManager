@@ -33,6 +33,18 @@ pub enum CronManagerError {
     #[error("request body exceeds {limit} bytes")]
     RequestTooLarge { limit: usize },
 
+    #[error("too many query parameters: {count} exceeds cap {limit}")]
+    TooManyQueryParams { count: usize, limit: usize },
+
+    #[error("missing or invalid admin bearer token")]
+    Unauthorized,
+
+    #[error("forbidden: {0}")]
+    Forbidden(String),
+
+    #[error("too many requests: {retry_after_secs}s minimum interval")]
+    TooManyRequests { retry_after_secs: u64 },
+
     #[error("bad request: {0}")]
     BadRequest(String),
 
@@ -77,7 +89,12 @@ impl CronManagerError {
             | Self::InvalidConfig { .. }
             | Self::InvalidCron { .. }
             | Self::BadRequest(_) => StatusCode::BAD_REQUEST,
-            Self::RequestTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
+            Self::Unauthorized => StatusCode::UNAUTHORIZED,
+            Self::Forbidden(_) => StatusCode::FORBIDDEN,
+            Self::TooManyRequests { .. } => StatusCode::TOO_MANY_REQUESTS,
+            Self::RequestTooLarge { .. } | Self::TooManyQueryParams { .. } => {
+                StatusCode::PAYLOAD_TOO_LARGE
+            }
             Self::UpstreamHttpError { .. } | Self::UpstreamBodyTooLarge { .. } => {
                 StatusCode::BAD_GATEWAY
             }
@@ -99,6 +116,10 @@ impl CronManagerError {
             Self::InvalidConfig { .. } => "invalid_config",
             Self::InvalidCron { .. } => "invalid_cron",
             Self::RequestTooLarge { .. } => "request_too_large",
+            Self::TooManyQueryParams { .. } => "too_many_query_params",
+            Self::Unauthorized => "unauthorized",
+            Self::Forbidden(_) => "forbidden",
+            Self::TooManyRequests { .. } => "too_many_requests",
             Self::BadRequest(_) => "bad_request",
             Self::UpstreamHttpError { .. } => "upstream_http_error",
             Self::UpstreamTimeout { .. } => "upstream_timeout",
@@ -129,6 +150,17 @@ impl IntoResponse for CronManagerError {
                 "error": self.code(),
                 "message": self.to_string(),
                 "limit": limit,
+            }),
+            Self::TooManyQueryParams { count, limit } => json!({
+                "error": self.code(),
+                "message": self.to_string(),
+                "count": count,
+                "limit": limit,
+            }),
+            Self::TooManyRequests { retry_after_secs } => json!({
+                "error": self.code(),
+                "message": self.to_string(),
+                "retry_after_secs": retry_after_secs,
             }),
             _ => json!({
                 "error": self.code(),

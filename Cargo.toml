@@ -49,6 +49,17 @@ anyhow = "1"
 uuid = { version = "1", features = ["v4"] }
 async-trait = "0.1"
 
+# Security helpers
+# `subtle` — constant-time comparison for the admin bearer-token
+# check (prevents timing side-channels on the equality check).
+# `url` — strict URL parsing used by the SSRF pre-flight in the
+# DSL loader and the HTTP executor.
+# `form_urlencoded` — bounded query-string parsing that lets the
+# router cap the number of parameters BEFORE building a HashMap.
+subtle = "2"
+url = "2"
+form_urlencoded = "1"
+
 [dev-dependencies]
 tempfile = "3"
 mockito = "1"
