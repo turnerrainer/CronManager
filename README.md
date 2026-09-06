@@ -60,8 +60,6 @@ config in [`CLAUDE.md` § Best-practice configs](./CLAUDE.md#best-practice-confi
   changes since `0.1.0-alpha.3`, how to spot a broken config, how
   to fix common problems, and best-practice config baselines
   (loopback dev, public/internet, JVM-compat port).
-- **[`HANDOFF.md`](./HANDOFF.md)** — current verification state,
-  open backlog, and the h2ck.me security-audit pipeline.
 - **Book** — [turnerrainer.github.io/cronmanager](https://turnerrainer.github.io/cronmanager/)
   (getting started, configuration reference, failure modes)
 - **Design** — [`docs/DESIGN.md`](./docs/DESIGN.md) — what

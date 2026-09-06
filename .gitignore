@@ -49,5 +49,11 @@ build/
 /docs/refacto/
 /tasks/backlog/008-cross-impl-harness.md
 
+# Maintainer handoff — internal-only. Carries verification
+# details (container digests, live-sweep transcripts, the
+# h2ck.me pipeline mechanics) that don't belong in a public tree.
+# Kept on-disk during development; not published.
+/HANDOFF.md
+
 # mdBook linkcheck cache
 /book/linkcheck/

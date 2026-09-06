@@ -22,8 +22,6 @@ same DSL doubles every fire.
 
 Deeper reading, in order of usefulness for a maintainer:
 
-- `HANDOFF.md` — current verification state, backlog, and the
-  h2ck.me security-audit pipeline.
 - `book/src/configuration.md` — every `cronmanager.yaml` field with
   its type, default, and meaning.
 - `book/src/failure-modes.md` — HTTP status → `error` code table.
@@ -318,8 +316,7 @@ fix inline.
 
 ## Verification set
 
-Run these on any change; every one should exit 0. HANDOFF.md
-records the last-verified counts.
+Run these on any change; every one should exit 0.
 
 ```bash
 cargo fmt --check
@@ -358,16 +355,10 @@ docker run --rm -p 8080:8080 \
 - Version bumps touch **every** file listed in DEV-REQUIREMENTS §8
   atomically: `Cargo.toml`, `Cargo.lock`, `VERSION`,
   `docker-compose.yml`, `README.md`, `book/src/introduction.md`,
-  `HANDOFF.md`, `CHANGELOG.md`. Miss one and the release audit
-  will catch it, but so will an LLM re-reading the tree.
+  `CHANGELOG.md` (and the local internal HANDOFF, if present).
+  Miss one and the release audit will catch it, but so will an
+  LLM re-reading the tree.
 - Work on `dev`. Merge to `main` only when tagging a release.
-- New security controls belong in `src/security.rs` — that module
-  is called out in the h2ck.me review as the seed of a
-  future `buerostack-security` workspace crate; keep the
-  primitives generic so extraction stays cheap.
-- Known v2 audit backlog (from `HANDOFF.md`): `ReloadGate` LRU
-  eviction, `bind_is_loopback` completeness sweep
-  (`127.0.0.0/8`, `localhost` hostname, `[::1]`,
-  `::ffff:127.0.0.1`), H2 sanitiser applied at DB persist, and
-  the `src/security.rs` extraction. Don't reinvent these — pick
-  the ticket up.
+- New security controls belong in `src/security.rs` — keep the
+  primitives generic so a future extraction into a shared
+  `buerostack-security` workspace crate stays cheap.
