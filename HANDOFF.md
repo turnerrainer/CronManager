@@ -1,29 +1,43 @@
 # HANDOFF
 
-**Written**: 2026-08-05
-**Last verified green**: 2026-08-05 — cargo test 90/0/0 (61 unit
-+ 29 integration; 3 postgres-conditional skipped without DB); fmt
-+ clippy `-D warnings` clean; mdbook + linkcheck build clean;
-`v0.1.0-alpha.3` published via CI in 41m3s with no deprecation
-annotations (`turnerrainer/cronmanager:alpha` on Docker Hub +
-GHCR, digest
+**Written**: 2026-08-05 · **Last refreshed**: 2026-09-07 for the
+`v0.1.4-alpha` release.
+
+**Current release**: `v0.1.4-alpha` — h2ck.me v1 audit fixes +
+Snyk-flagged base-image bump (`debian:bookworm-slim` →
+`debian:13.6-slim`, PR #2). Merged from
+`security/h2ck-audit-v1-hardening` (PR #3, verdict ✅ pass).
+Verification captured in `CHANGELOG.md`: 156 tests / 0 failures,
+`cargo audit` clean, `cargo deny check` clean, `cargo clippy
+--all-targets -- -D warnings` clean, `mdbook build` + linkcheck
+clean. Book live at <https://turnerrainer.github.io/cronmanager/>.
+
+**Previously verified green** (2026-08-05, `v0.1.0-alpha.3`):
+cargo test 90/0/0 (61 unit + 29 integration; 3 postgres-conditional
+skipped without DB); fmt + clippy `-D warnings` clean; mdbook +
+linkcheck build clean; `v0.1.0-alpha.3` published via CI in 41m3s
+with no deprecation annotations
+(`turnerrainer/cronmanager:alpha` on Docker Hub + GHCR, digest
 `sha256:6a761e9273bcbf205b7ae75917bd9336938cb865a4a63c4d499307698bbeeaeb`
 — identical across both registries); full local endpoint sweep
-passed: `/`, `/health`, `/actuator/health` alias, `/actuator/info`
-(reports v0.1.0-alpha.3), `/jobs` + `/jobs/` trailing-slash pair,
-`/running` + `/running/` trailing-slash pair, `/jobs/{group}`,
-`POST /execute/…`, `POST /stop/…` (returns
-`{"stopped":bool,"running":…}`), `POST /reload/…` (returns
-`{"reloaded":N}`, N=11 in demo image), `413` on body over
-`limits.max_request_bytes`, `404 job_not_found` structured JSON
-on unknown job. Boot-diagnostic INFO summary + per-file DSL load
-+ per-group summary + per-job scheduler INFO + retry-parity ERROR
-log line all verified live in container logs.
-Previous digest `sha256:c9e26a4cc909e8bdf8ec0a1b021d533ba0d5d21fe34ef7b7b5a7d4158826ab69`
-was `v0.1.0-alpha.2` (superseded by alpha.3; no product diff, CI
-housekeeping only).
-**Branch**: `dev` — tagged `v0.1.0-alpha.3` and pushed. Book live
-at <https://turnerrainer.github.io/cronmanager/>.
+passed: `/`, `/health`, `/actuator/health` alias, `/actuator/info`,
+`/jobs` + `/jobs/` trailing-slash pair, `/running` + `/running/`
+trailing-slash pair, `/jobs/{group}`, `POST /execute/…`,
+`POST /stop/…` (returns `{"stopped":bool,"running":…}`),
+`POST /reload/…` (returns `{"reloaded":N}`, N=11 in demo image),
+`413` on body over `limits.max_request_bytes`,
+`404 job_not_found` structured JSON on unknown job.
+Boot-diagnostic INFO summary + per-file DSL load + per-group
+summary + per-job scheduler INFO + retry-parity ERROR log line all
+verified live in container logs.
+
+**Branch**: `dev` — tagged `v0.1.4-alpha` and pushed.
+
+**LLM / new-dev orientation**: [`CLAUDE.md`](./CLAUDE.md) at the
+repo root carries the breaking-changes summary, the
+problematic-config triage table, the fix cookbook, and the
+best-practice config baselines. Start there if you're landing
+cold.
 
 ## What this repo IS today
 
@@ -34,14 +48,37 @@ in. JVM `application.yml` camelCase field names accepted as
 diagnostic that shows the fix.
 
 - `POST /execute/{group}/{job}` — manual trigger of any scheduled
-  or manual-only job
+  or manual-only job (bearer-token gated as of `v0.1.4-alpha`)
 - `GET /jobs`, `/running` — introspection
 - `POST /stop/{group}/{job}`, `POST /reload/{group}` — control
+  (bearer-token gated; `/reload` also per-group rate-limited)
 - HTTP + shell executors with retry, `ignoreFailures`, time-window
-  gating (`startDate`/`endDate`)
+  gating (`startDate`/`endDate`), SSRF pre-flight, and shell
+  dangerous-env blacklist
 - Optional TimescaleDB history (hypertable + retention +
   continuous aggregates), same schema as the JVM version's
   Liquibase changelog
+
+## Breaking changes since `v0.1.0-alpha.3`
+
+Full detail in [`CHANGELOG.md`](./CHANGELOG.md) under
+`[0.1.4-alpha]`. LLM-friendly summary + fix cookbook in
+[`CLAUDE.md`](./CLAUDE.md). Headline for anyone upgrading:
+
+- **Public-facing bind now refuses to start without an admin
+  token** (or `admin.trust_network=true` behind an authenticating
+  proxy). Loopback deployments still boot with zero config.
+- HTTP jobs may no longer target private / loopback / link-local /
+  ULA hosts by default (`security.block_private_networks=true`).
+- Shell `/execute` refuses env overrides for `PATH`, `LD_*`,
+  `DYLD_*`, `PYTHONPATH`, `NODE_OPTIONS`, `RUBYOPT`, `PERL5OPT`,
+  `JAVA_TOOL_OPTIONS`, and loader-hook families → `403`.
+- New caps: `security.max_query_params` (413),
+  `security.max_dsl_file_bytes` (load-time refusal),
+  `security.max_retry_count` (load-time refusal),
+  `security.reload_min_interval_secs` (`/reload` 429).
+- History rows truncate `response_body` at
+  `security.stored_response_body_max_bytes` (default 64 KiB).
 
 ## Verification set (all should exit 0)
 
@@ -51,8 +88,9 @@ cargo clippy --all-targets -- -D warnings
 cargo build --release --locked --bin cronmanager
 cargo test --no-fail-fast
 cargo audit --deny warnings
+cargo deny check all
 ( cd book && mdbook build )
-docker build -t cronmanager:0.1.0-alpha.1 .
+docker build -t cronmanager:0.1.4-alpha .
 ```
 
 Live smoke (once you have compose up):
@@ -79,6 +117,7 @@ curl -s http://localhost:9010/jobs | head
 
 | Topic | File |
 |---|---|
+| LLM / new-dev orientation (breaking changes + fix cookbook + best-practice configs) | [`./CLAUDE.md`](./CLAUDE.md) |
 | Cross-project ruleset (authoritative) | [`../DEV-REQUIREMENTS.md`](../DEV-REQUIREMENTS.md) |
 | Domain design (this project) | [`./docs/DESIGN.md`](./docs/DESIGN.md) |
 | Project-specific standards addendum | [`./STANDARDS.md`](./STANDARDS.md) |
