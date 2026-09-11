@@ -3,6 +3,7 @@
 //! See [`docs/DESIGN.md`](https://github.com/turnerrainer/cronmanager/blob/dev/docs/DESIGN.md)
 //! for the domain design.
 
+pub mod access_log;
 pub mod config;
 pub mod dsl;
 pub mod error;

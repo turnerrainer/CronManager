@@ -261,7 +261,12 @@ pub fn build(state: AppState) -> Router {
         // limit is 2 MiB; disable it and apply ours so the
         // operator's config wins.
         .layer(DefaultBodyLimit::disable())
-        .layer(RequestBodyLimitLayer::new(body_limit));
+        .layer(RequestBodyLimitLayer::new(body_limit))
+        // Audit LOG-v1 FN-LOG-3: emit one INFO line per completed request
+        // for SOC2/ISO27001 access-log compliance. See src/access_log.rs.
+        .layer(axum::middleware::from_fn(
+            crate::access_log::access_log_middleware,
+        ));
     if let Some(cors) = cors {
         router = router.layer(cors);
     }
