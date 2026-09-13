@@ -8,6 +8,170 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0-alpha] - 2026-09-13
+
+h2ck.me v2 audit round + Buerostack fleet-strongholds adoption.
+Closes every break-test finding surfaced after `0.1.4-alpha`
+merged (FN1, FN2, FN3, FN5, FN9, FN-LOG-1..4, F-CM-1, F-CM-4),
+the F-CM-2 per-group-token feature request, the FN7/FN8 DSL
+list-form request, and all four PR-review v2 backlog nits. Also
+adopts four cross-service `FLEET-STRONGHOLDS.md` patterns (§1.6
+W3C traceparent propagation, §5.1 default security response
+headers, §11.1 credential-safety gate, §11.2 posture-safety
+gate).
+
+223 tests pass (was 156); `cargo audit` clean; `cargo deny check
+all` clean; `cargo clippy --all-targets -- -D warnings` clean;
+`mdbook build` + linkcheck clean. Minor version bump because
+`JobKind::Exec` changes shape (`command: String` →
+`argv: Vec<String>`) — any downstream consumer constructing a
+`JobSpec` directly must update the fixture. Config / DSL / HTTP
+surface stays backward-compatible: every new field defaults to
+the pre-existing behaviour.
+
+Ships on `dev` only. `main` remains at `0.1.4-alpha` until the
+project reaches prod-ready state.
+
+### Added
+
+- **`/healthz` public alias** for `/health` — Kubernetes
+  `livenessProbe` default binds cleanly without a token.
+  (h2ck.me FN1 / F-CM-4.)
+- **`security.expose_jobs_publicly` / `security.expose_running_publicly`**
+  — optional gate on `/jobs*` and `/running*` recon endpoints.
+  Default `true` for backward compat; boot WARN when left `true`
+  with a token configured. (h2ck.me FN3 / F-CM-1.)
+- **`security.per_group_token_envs: BTreeMap<String, String>`** —
+  optional scoped tokens per group. When populated,
+  `/execute/:g/:j`, `/stop/:g/:j`, `/reload/:g` accept EITHER the
+  master admin token OR the group-specific token. Values are
+  env-var names — no raw tokens in the config file. Missing envs
+  WARN at boot and the group falls back to master-only.
+  (h2ck.me F-CM-2.)
+- **DSL `command:` accepts YAML list form** — explicit-argv
+  passthrough for shell jobs that need `sh -c "…"` semantics.
+  String form (JVM parity: whitespace-tokenised) remains
+  supported. (h2ck.me FN7 + FN8.)
+- **`env_safety` module** — reads `APP_ENV` / `ENVIRONMENT` /
+  `DEPLOY_ENV` (first match wins, unknown values fail-safe to
+  `Production`) and REFUSES to boot in non-`dev` when weak
+  credentials or unsafe posture flags are present. Weak-pattern
+  list covers `changeit`, `password`, `01234`, `dev-`, `-test`,
+  `example`, `test-admin-token`, plus min-length checks (32 for
+  tokens, 12 for passwords). In `dev` the same conditions
+  produce WARN and boot continues. (FLEET-STRONGHOLDS §11.1 +
+  §11.2.)
+- **Default security response headers** — Content-Security-Policy,
+  Strict-Transport-Security, X-Frame-Options DENY,
+  X-Content-Type-Options nosniff, Referrer-Policy no-referrer on
+  every response, including error paths. (FLEET §5.1.)
+- **W3C Trace Context response headers** — `traceparent` +
+  `x-trace-id` on every response. Inbound `traceparent` is
+  inherited when well-formed (version=00, 32-hex trace-id
+  ≠ all-zeros); fresh 32-hex uuid otherwise. (FLEET §1.6.)
+- **Per-request access log** — one INFO line per completed
+  request: `http_request_completed method=X route=Y status=Z
+  duration_us=… trace_id=…`. Matched route pattern only (never
+  raw URI), never headers/bodies, never client IP. SOC 2 CC7.2 /
+  ISO 27001 A.12.4 compliance. (h2ck.me FN-LOG-3.)
+- **Auth-fail WARN with client_ip_hash + route + reason** — every
+  admin-gate reject emits a structured line with a PII-safe
+  SHA-256 short-hash of the client IP, the matched route
+  pattern, and a distinguishable reason (missing header vs
+  wrong token). Enables blocklist derivation from logs without
+  exposing raw IPs. (h2ck.me FN-LOG-2.)
+- **`tower_http::TimeoutLayer`** wraps the whole request/body-
+  read/handler/response-write against `limits.request_timeout_secs`.
+  Kills slow-drip and slow-loris style requests that used to
+  bypass the executor-level timeout. (h2ck.me FN5.)
+- **`sha2` direct dep + `security::short_client_hash`** — PII-safe
+  short-hash helper. `tower-http` gains the `timeout` feature.
+
+### Changed
+
+- **⚠️ `JobKind::Exec.command: String` → `argv: Vec<String>`** —
+  shape change to the executor API. Loader normalises both DSL
+  forms (string / list) to argv before the executor sees them.
+  Any Rust fixture constructing a `JobSpec` directly must update
+  the field. `JobKind::exec_command_display()` returns the argv
+  space-joined for logs / display. (h2ck.me FN7 + FN8.)
+- **DSL loader skips-and-warns on per-file errors** — one bad
+  file no longer aborts the whole boot / `/reload`. Bad files
+  log at ERROR (naming source path + reason); sibling good files
+  register. If EVERY file fails, boot succeeds with 0 jobs plus
+  a distinguishable WARN. Only `read_dir` failures remain fatal.
+  (h2ck.me FN2.)
+- **`PostgresRecorder` sanitises `response_body` BEFORE persist**
+  — new `security::sanitize_for_persistence` runs first, then
+  `truncate_response_body` applies the 64 KiB head+tail cap.
+  Downstream DB-row viewers see escaped CR/LF/ANSI; raw bytes
+  no longer land in the row. (h2ck.me PR-review v1 nit #3.)
+- **`ReloadGate` memory bounded** — opportunistic stale eviction
+  (entries older than `10 × min_interval_secs`) plus hard cap
+  at 1024 distinct groups on the write path. Behavioural no-op
+  for deployments with < 1024 groups. (h2ck.me PR-review v1
+  nit #1.)
+- **Log stream is plain-text under Docker / systemd** —
+  `tracing_subscriber::fmt()` only emits ANSI colour codes when
+  stderr is a TTY. SIEM parsers see clean bytes. (h2ck.me
+  FN-LOG-1.)
+- **`admin_gate` extracts group from URL path** and checks both
+  master AND group-specific tokens in parallel via
+  `subtle::ConstantTimeEq` so a caller can't time which token
+  was consulted. (F-CM-2.)
+- **`docker-compose.yml`**: `read_only: true` on the cronmanager
+  service — rootfs is immutable; `/tmp` stays writable via
+  `tmpfs` (64 MiB). Any shell job needing persistent scratch
+  points at a bind-mounted volume added by the operator.
+  (h2ck.me FN9.) Image tag bumped from the stale `0.1.0-alpha.1`
+  to track the crate version.
+- **`main.rs` uses `into_make_service_with_connect_info::<SocketAddr>`**
+  so `admin_gate` receives the peer address for the auth-fail
+  log line.
+
+### Tests / hardening (in commits, not surfaced to end users)
+
+- 14 new `env_safety::tests` unit tests (env classification,
+  weak-value detection, enforce_* behaviour).
+- 5 new `traceparent::tests` unit tests.
+- 7 new integration tests for the F-CM-2 per-group-token accept /
+  reject matrix.
+- 5 new integration tests for FN3 recon-endpoint gating.
+- 4 new loader tests for the two DSL command forms.
+- 2 new shell-executor tests for the argv shape.
+- Regression pin `trust_network_true_with_token_set_still_enforces_gate`
+  (h2ck.me PR-review nit #4) locks in the invariant that
+  `admin.trust_network=true` never silently disables the runtime
+  token check.
+- Regression pin `slow_body_upload_hits_request_deadline` drives
+  a raw TCP socket to verify the FN5 fix.
+- Regression pin `every_response_carries_security_headers` walks
+  four routes and validates all five FLEET §5.1 headers.
+- Regression pins `every_response_carries_traceparent_headers` +
+  `traceparent_inherits_inbound_trace_id`.
+
+### Documentation
+
+- `CLAUDE.md`: new "Breaking / non-obvious changes in `0.2.0-alpha`"
+  section with 15 numbered items covering every code / config /
+  DSL surface change; expanded boot-log triage tables; two-form
+  `command:` guide; Rust-fixture update pattern; hard rule that
+  version bumps / tags / GitHub Releases require explicit
+  maintainer approval regardless of invocation mode. Records
+  that `main` is intentionally frozen at `0.1.4-alpha` until
+  prod-ready.
+- `book/src/configuration.md`: field reference gains the three
+  new SecurityConfig knobs; new "Per-group admin tokens" and
+  "Environment-aware boot safety gates" subsections; two-form
+  `command:` documentation with worked "why the string form
+  breaks for shell quoting" example; REST-API table gains an
+  Auth column and the `/healthz` alias; new "Every response
+  carries" / "Access logging" / "Log stream is plain-text under
+  Docker / systemd" subsections.
+- `book/src/failure-modes.md`: status table gains 401 / 403 / 408 /
+  413 too_many_query_params / 429 too_many_requests; common
+  causes gains skip-and-warn / env-safety / slow-body triage.
+
 ## [0.1.4-alpha] - 2026-09-06
 
 Security hardening pass in response to the h2ck.me pre-publication

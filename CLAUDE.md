@@ -6,18 +6,11 @@ is, which behaviours changed recently, how to spot a broken
 config, how to fix one, and which config shape is the current
 best-practice baseline.
 
-**Current release**: `0.1.4-alpha` (see `VERSION`, `Cargo.toml`,
+**Current release**: `0.2.0-alpha` (see `VERSION`, `Cargo.toml`,
 `CHANGELOG.md`). Branch of record for active work: `dev`. First
-stable target: `v1.0.0` on `main`.
-
-**Post-release state (unreleased on `dev`)**: 15 PRs landed after
-`0.1.4-alpha` closing h2ck.me v1 break-test findings, all four
-PR-review v2 backlog nits, F-CM-2 per-group tokens, FN7/FN8 DSL
-list form, and four FLEET-STRONGHOLDS adoptions (§1.6, §5.1,
-§11.1, §11.2). See the **"Breaking / non-obvious changes on `dev`
-since `0.1.4-alpha`"** section below for everything an LLM editing
-code / config / DSL must know. Version has NOT been bumped —
-next release cadence is at the maintainer's discretion.
+stable target: `v1.0.0` on `main`. `main` is intentionally frozen
+at `0.1.4-alpha` until the project reaches prod-ready state —
+alphas ship from `dev` only.
 
 ## What the project is
 
@@ -99,7 +92,7 @@ been on every config and DSL struct since `0.1.0-alpha.2`. A typo
 like `dslpath:` (missing underscore) or `retryCoun: 3` is a hard
 load error, not a silent no-op.
 
-## Breaking / non-obvious changes on `dev` since `0.1.4-alpha`
+## Breaking / non-obvious changes in `0.2.0-alpha` (since `0.1.4-alpha`)
 
 **None of these are required by upgraders** — every new field
 defaults to the pre-existing behaviour. But an LLM editing this
