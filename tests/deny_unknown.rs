@@ -87,6 +87,11 @@ fn write_dsl(root: &std::path::Path, rel: &str, body: &str) {
     std::fs::write(full, body).unwrap();
 }
 
+// Per-file rejection tests use `load_file` directly. The tree-level
+// walker (`load_all`) skips-and-warns on per-file errors after
+// h2ck.me FN2 — see `load_all_skips_bad_file_and_loads_good_ones`
+// in `src/dsl/loader.rs::tests`.
+
 #[test]
 fn dsl_unknown_field_rejected() {
     // Typo'd DSL field must hard-fail, not silently no-op.
@@ -96,7 +101,8 @@ fn dsl_unknown_field_rejected() {
         "j.yaml",
         "hc:\n  trigger: \"0 * * * * ?\"\n  type: http\n  method: GET\n  url: https://x\n  retryCoun: 3\n",
     );
-    let err = loader::load_all(tmp.path()).unwrap_err();
+    let file = tmp.path().join("j.yaml");
+    let err = loader::load_file(tmp.path(), &file).unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("retryCoun") || msg.contains("unknown"),
@@ -113,7 +119,8 @@ fn dsl_http_method_typo_rejected_at_load() {
         "j.yaml",
         "hc:\n  trigger: \"0 * * * * ?\"\n  type: http\n  method: GETT\n  url: https://x\n",
     );
-    let err = loader::load_all(tmp.path()).unwrap_err();
+    let file = tmp.path().join("j.yaml");
+    let err = loader::load_file(tmp.path(), &file).unwrap_err();
     assert!(
         matches!(
             err,
@@ -131,7 +138,8 @@ fn dsl_missing_http_method_rejected() {
         "j.yaml",
         "hc:\n  trigger: \"0 * * * * ?\"\n  type: http\n  url: https://x\n",
     );
-    let err = loader::load_all(tmp.path()).unwrap_err();
+    let file = tmp.path().join("j.yaml");
+    let err = loader::load_file(tmp.path(), &file).unwrap_err();
     assert!(
         matches!(
             err,
@@ -150,7 +158,8 @@ fn dsl_bool_true_trigger_rejected() {
         "j.yaml",
         "hc:\n  trigger: true\n  type: http\n  method: GET\n  url: https://x\n",
     );
-    let err = loader::load_all(tmp.path()).unwrap_err();
+    let file = tmp.path().join("j.yaml");
+    let err = loader::load_file(tmp.path(), &file).unwrap_err();
     assert!(
         matches!(
             err,
