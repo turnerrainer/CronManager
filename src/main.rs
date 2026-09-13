@@ -4,8 +4,8 @@
 //! DSL loader → scheduler → axum router → serve.
 
 use cronmanager::{
-    config::AppConfig, dsl::loader, executor::ExecutorBundle, history::postgres::PostgresRecorder,
-    history::NoopRecorder, router, scheduler::Scheduler,
+    config::AppConfig, dsl::loader, env_safety, executor::ExecutorBundle,
+    history::postgres::PostgresRecorder, history::NoopRecorder, router, scheduler::Scheduler,
 };
 use std::sync::Arc;
 
@@ -31,6 +31,20 @@ async fn main() -> anyhow::Result<()> {
     // operator (e.g. `allowed_origins: ["*"]`, disabled timeouts,
     // missing admin token, permissive SSRF posture).
     cfg.boot_diagnostics();
+
+    // FLEET-STRONGHOLDS §11 — env-aware safety gates. In non-dev
+    // environments (APP_ENV / ENVIRONMENT / DEPLOY_ENV) refuse to
+    // start when weak/default credentials or unsafe posture flags
+    // are present. In `dev` these become WARN and boot continues.
+    // Unknown environment strings fail-safe to Production.
+    let env = env_safety::Environment::from_env();
+    tracing::info!(target: "env_safety", "detected environment: {env:?}");
+    if let Err(msg) = env_safety::enforce_creds(env, &env_safety::cred_checks_for(&cfg)) {
+        return Err(anyhow::anyhow!(msg));
+    }
+    if let Err(msg) = env_safety::enforce_posture(env, &env_safety::posture_checks_for(&cfg)) {
+        return Err(anyhow::anyhow!(msg));
+    }
 
     let bind = format!("0.0.0.0:{}", cfg.port);
     let admin_token = cfg.resolve_admin_token();
