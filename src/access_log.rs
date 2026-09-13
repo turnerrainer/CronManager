@@ -82,10 +82,7 @@ mod tests {
             )
             .body(Body::empty())
             .unwrap();
-        assert_eq!(
-            extract_trace_id(&req),
-            "0af7651916cd43dd8448eb211c80319c"
-        );
+        assert_eq!(extract_trace_id(&req), "0af7651916cd43dd8448eb211c80319c");
     }
 
     #[test]
