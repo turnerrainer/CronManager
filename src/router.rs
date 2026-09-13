@@ -7,7 +7,9 @@
 //! * `GET  /actuator/health` (JVM URL, aliased to `/health`)
 //! * `GET  /actuator/info`   (JVM URL, minimal build-info body)
 //! * `GET  /jobs`, `GET /jobs/` (trailing slash), `GET /jobs/{group}`
+//!   — public by default; gated when `security.expose_jobs_publicly=false`
 //! * `GET  /running`, `GET /running/` (trailing slash), `GET /running/{group}`
+//!   — public by default; gated when `security.expose_running_publicly=false`
 //! * `POST /execute/{group}/{job}`   ← bearer-token gated
 //! * `POST /stop/{group}/{job}`       ← bearer-token gated
 //! * `POST /reload/{group}`           ← bearer-token gated + per-group throttle
@@ -228,33 +230,57 @@ fn bearer_token_bytes(header: &str) -> Option<Vec<u8>> {
 pub fn build(state: AppState) -> Router {
     let cors = build_cors(&state.cfg.allowed_origins);
     let body_limit = state.cfg.limits.max_request_bytes;
+    let jobs_public = state.cfg.security.expose_jobs_publicly;
+    let running_public = state.cfg.security.expose_running_publicly;
 
-    // Two-tier router: state-changing routes are behind the admin
-    // gate; read-only routes stay open. Both trees share the same
-    // AppState so the gate middleware can read the token.
-    let admin_routes = Router::new()
+    // Two-tier router: state-changing routes go through admin_gate.
+    // Recon endpoints (/jobs, /running) join the gated tree when
+    // the operator flips security.expose_jobs_publicly=false or
+    // security.expose_running_publicly=false (h2ck.me FN3 / F-CM-1).
+    // The default keeps them open for backward compatibility with
+    // v0.1.4-alpha operator dashboards.
+    let mut admin_routes = Router::new()
         .route("/execute/:group/:job", post(execute_job))
         .route("/stop/:group/:job", post(stop_job))
-        .route("/reload/:group", post(reload_jobs))
-        .layer(from_fn_with_state(state.clone(), admin_gate));
+        .route("/reload/:group", post(reload_jobs));
+    if !jobs_public {
+        admin_routes = admin_routes
+            .route("/jobs", get(jobs_all))
+            .route("/jobs/", get(jobs_all))
+            .route("/jobs/:group", get(jobs_group));
+    }
+    if !running_public {
+        admin_routes = admin_routes
+            .route("/running", get(running_all))
+            .route("/running/", get(running_all))
+            .route("/running/:group", get(running_group));
+    }
+    let admin_routes = admin_routes.layer(from_fn_with_state(state.clone(), admin_gate));
 
-    let mut router = Router::new()
+    let mut public = Router::new()
         .route("/", get(index))
         // /health is the native name; /actuator/health is the JVM
         // URL kept for operators grepping the old Actuator path.
         // Both return the same minimal body.
         .route("/health", get(health))
         .route("/actuator/health", get(health))
-        .route("/actuator/info", get(info))
-        .route("/jobs", get(jobs_all))
-        // JVM `CronController.java:31` mapped both `/jobs` and
-        // `/jobs/` — axum treats these as distinct so register
-        // both explicitly.
-        .route("/jobs/", get(jobs_all))
-        .route("/jobs/:group", get(jobs_group))
-        .route("/running", get(running_all))
-        .route("/running/", get(running_all))
-        .route("/running/:group", get(running_group))
+        .route("/actuator/info", get(info));
+    if jobs_public {
+        public = public
+            .route("/jobs", get(jobs_all))
+            // JVM `CronController.java:31` mapped both `/jobs` and
+            // `/jobs/` — axum treats these as distinct so register
+            // both explicitly.
+            .route("/jobs/", get(jobs_all))
+            .route("/jobs/:group", get(jobs_group));
+    }
+    if running_public {
+        public = public
+            .route("/running", get(running_all))
+            .route("/running/", get(running_all))
+            .route("/running/:group", get(running_group));
+    }
+    let mut router = public
         .merge(admin_routes)
         .with_state(state)
         // Wire `limits.max_request_bytes`. The default axum body

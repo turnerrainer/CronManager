@@ -214,6 +214,30 @@ pub struct SecurityConfig {
         alias = "reloadMinIntervalSecs"
     )]
     pub reload_min_interval_secs: u64,
+
+    /// Whether the `/jobs`, `/jobs/`, `/jobs/{group}` endpoints
+    /// are readable without the admin bearer token. When true (the
+    /// backward-compat default), the endpoints stay open — same as
+    /// v0.1.4-alpha. When false, they require the admin token and
+    /// return 401 without it.
+    ///
+    /// h2ck.me FN3 / F-CM-1: `/jobs` returns the full scheduler
+    /// catalog (every group, job name, cron schedule, last
+    /// execution, last result) — a nice attacker roadmap. Flip to
+    /// false for internet-exposed deployments unless an operator
+    /// dashboard genuinely needs anonymous read access.
+    #[serde(default = "default_true", alias = "exposeJobsPublicly")]
+    pub expose_jobs_publicly: bool,
+
+    /// Whether the `/running`, `/running/`, `/running/{group}`
+    /// endpoints are readable without the admin bearer token. Same
+    /// posture as `expose_jobs_publicly` — h2ck.me FN3 / F-CM-1
+    /// flagged `/running` as revealing which jobs are currently
+    /// mid-execution (time-attack signal). Default true for
+    /// backward compat; recommend flipping to false with the same
+    /// deployment rationale.
+    #[serde(default = "default_true", alias = "exposeRunningPublicly")]
+    pub expose_running_publicly: bool,
 }
 
 impl Default for SecurityConfig {
@@ -228,6 +252,8 @@ impl Default for SecurityConfig {
             min_cron_interval_secs: default_min_cron_interval_secs(),
             stored_response_body_max_bytes: default_stored_response_body_max_bytes(),
             reload_min_interval_secs: default_reload_min_interval_secs(),
+            expose_jobs_publicly: true,
+            expose_running_publicly: true,
         }
     }
 }
@@ -436,6 +462,22 @@ impl AppConfig {
         if self.security.allow_dangerous_env_overrides {
             tracing::warn!(
                 "security: allow_dangerous_env_overrides=true — shell env override blacklist (PATH, LD_*, DYLD_*, PYTHONPATH, NODE_OPTIONS, …) is DISABLED. Any allow-listed dangerous var can be set from /execute query params."
+            );
+        }
+        // Recon-endpoint exposure — h2ck.me FN3 / F-CM-1. Default is
+        // true (backward-compat with v0.1.4-alpha), so we WARN by
+        // default when a token is set: an operator who bothers with
+        // the admin gate almost certainly wants recon locked down
+        // too, and having the setting default to true silently
+        // undoes that intent.
+        if self.security.expose_jobs_publicly && token_present {
+            tracing::warn!(
+                "security: expose_jobs_publicly=true — GET /jobs and /jobs/{{group}} return the full scheduler catalog (every group, job name, schedule, last execution, last result) to any anonymous caller. Set security.expose_jobs_publicly=false to require the admin token."
+            );
+        }
+        if self.security.expose_running_publicly && token_present {
+            tracing::warn!(
+                "security: expose_running_publicly=true — GET /running and /running/{{group}} reveal what is currently mid-execution to any anonymous caller (time-attack signal). Set security.expose_running_publicly=false to require the admin token."
             );
         }
     }

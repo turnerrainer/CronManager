@@ -360,3 +360,73 @@ fn refuse_to_start_nonloopback_with_token_ok() {
     };
     assert!(router::refuse_to_start_without_token(&cfg, "0.0.0.0:8080", true).is_ok());
 }
+
+// ---------- FN3 / F-CM-1 — recon endpoint gate ----------
+
+#[tokio::test]
+async fn fn3_jobs_public_by_default_returns_200() {
+    // Backward-compat: default is expose_jobs_publicly=true so an
+    // upgrade from v0.1.4-alpha keeps the operator dashboard working.
+    let base = spawn_gated_app(default_cfg()).await;
+    let resp = reqwest::get(format!("{base}/jobs")).await.unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+}
+
+#[tokio::test]
+async fn fn3_jobs_gated_when_expose_jobs_publicly_false() {
+    let mut cfg = default_cfg();
+    cfg.security.expose_jobs_publicly = false;
+    let base = spawn_gated_app(cfg).await;
+    // Without the token: 401.
+    let no = reqwest::get(format!("{base}/jobs")).await.unwrap();
+    assert_eq!(no.status().as_u16(), 401);
+    // With the token: 200.
+    let yes = reqwest::Client::new()
+        .get(format!("{base}/jobs"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(yes.status().as_u16(), 200);
+}
+
+#[tokio::test]
+async fn fn3_jobs_group_variant_gated_too() {
+    let mut cfg = default_cfg();
+    cfg.security.expose_jobs_publicly = false;
+    let base = spawn_gated_app(cfg).await;
+    let no = reqwest::get(format!("{base}/jobs/samples")).await.unwrap();
+    assert_eq!(no.status().as_u16(), 401);
+}
+
+#[tokio::test]
+async fn fn3_running_gated_when_expose_running_publicly_false() {
+    let mut cfg = default_cfg();
+    cfg.security.expose_running_publicly = false;
+    let base = spawn_gated_app(cfg).await;
+    let no = reqwest::get(format!("{base}/running")).await.unwrap();
+    assert_eq!(no.status().as_u16(), 401);
+    let yes = reqwest::Client::new()
+        .get(format!("{base}/running"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(yes.status().as_u16(), 200);
+}
+
+#[tokio::test]
+async fn fn3_health_stays_public_even_when_recon_is_gated() {
+    // /health MUST remain public — k8s liveness / LB probes.
+    let mut cfg = default_cfg();
+    cfg.security.expose_jobs_publicly = false;
+    cfg.security.expose_running_publicly = false;
+    let base = spawn_gated_app(cfg).await;
+    for path in ["/health", "/actuator/health", "/actuator/info", "/"] {
+        let s = reqwest::get(format!("{base}{path}"))
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(s.as_u16(), 200, "{path} must stay public, got {s}");
+    }
+}
