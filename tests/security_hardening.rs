@@ -480,3 +480,136 @@ async fn fn3_health_stays_public_even_when_recon_is_gated() {
         assert_eq!(s.as_u16(), 200, "{path} must stay public, got {s}");
     }
 }
+
+// ---------- F-CM-2 — per-group admin tokens ----------
+
+const GROUP_TOKEN: &str = "group-scoped-token-abcdef1234567890";
+
+async fn spawn_gated_with_per_group_tokens(cfg: AppConfig, per_group: Vec<(&str, &str)>) -> String {
+    let bundle = ExecutorBundle::new(&cfg, Arc::new(NoopRecorder)).unwrap();
+    let scheduler = Scheduler::new(bundle);
+    let state = AppState::new(Arc::new(cfg), scheduler.clone())
+        .with_admin_token(TOKEN.to_string())
+        .with_per_group_tokens(
+            per_group
+                .into_iter()
+                .map(|(g, t)| (g.to_string(), t.to_string())),
+        );
+    let app = router::build(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}")
+}
+
+#[tokio::test]
+async fn fcm2_group_specific_token_accepted_for_own_group() {
+    let base =
+        spawn_gated_with_per_group_tokens(default_cfg(), vec![("payroll", GROUP_TOKEN)]).await;
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/execute/payroll/nightly"))
+        .bearer_auth(GROUP_TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(resp.status().as_u16(), 401);
+    assert_eq!(resp.status().as_u16(), 404);
+}
+
+#[tokio::test]
+async fn fcm2_group_specific_token_rejected_for_other_group() {
+    let base =
+        spawn_gated_with_per_group_tokens(default_cfg(), vec![("payroll", GROUP_TOKEN)]).await;
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/execute/logistics/nightly"))
+        .bearer_auth(GROUP_TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 401);
+}
+
+#[tokio::test]
+async fn fcm2_master_token_still_works_on_every_group() {
+    let base =
+        spawn_gated_with_per_group_tokens(default_cfg(), vec![("payroll", GROUP_TOKEN)]).await;
+    for group in ["payroll", "logistics", "any-other"] {
+        let resp = reqwest::Client::new()
+            .post(format!("{base}/execute/{group}/nope"))
+            .bearer_auth(TOKEN)
+            .send()
+            .await
+            .unwrap();
+        assert_ne!(
+            resp.status().as_u16(),
+            401,
+            "master token must work for group {group}",
+        );
+    }
+}
+
+#[tokio::test]
+async fn fcm2_stop_endpoint_honors_per_group_token() {
+    let base =
+        spawn_gated_with_per_group_tokens(default_cfg(), vec![("payroll", GROUP_TOKEN)]).await;
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/stop/payroll/nightly"))
+        .bearer_auth(GROUP_TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(resp.status().as_u16(), 401);
+}
+
+#[tokio::test]
+async fn fcm2_reload_endpoint_honors_per_group_token() {
+    let mut cfg = default_cfg();
+    let tmp = tempfile::tempdir().unwrap();
+    cfg.dsl_path = tmp.path().to_path_buf();
+    let base = spawn_gated_with_per_group_tokens(cfg, vec![("payroll", GROUP_TOKEN)]).await;
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/reload/payroll"))
+        .bearer_auth(GROUP_TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+}
+
+#[tokio::test]
+async fn fcm2_group_without_per_group_entry_only_accepts_master() {
+    let base =
+        spawn_gated_with_per_group_tokens(default_cfg(), vec![("payroll", GROUP_TOKEN)]).await;
+    let bad = reqwest::Client::new()
+        .post(format!("{base}/execute/logistics/nope"))
+        .bearer_auth(GROUP_TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad.status().as_u16(), 401);
+    let good = reqwest::Client::new()
+        .post(format!("{base}/execute/logistics/nope"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(good.status().as_u16(), 401);
+}
+
+#[tokio::test]
+async fn fcm2_wrong_token_still_401_when_per_group_configured() {
+    // Belt-and-braces: verify a totally-wrong token is still
+    // rejected, i.e. the per-group check doesn't accidentally
+    // widen the gate to any bearer whatsoever.
+    let base =
+        spawn_gated_with_per_group_tokens(default_cfg(), vec![("payroll", GROUP_TOKEN)]).await;
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/execute/payroll/nightly"))
+        .bearer_auth("random-attacker-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 401);
+}

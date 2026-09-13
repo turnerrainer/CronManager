@@ -238,6 +238,29 @@ pub struct SecurityConfig {
     /// deployment rationale.
     #[serde(default = "default_true", alias = "exposeRunningPublicly")]
     pub expose_running_publicly: bool,
+
+    /// Optional per-group bearer tokens: map from group name to
+    /// the env var holding that group's token. When set, requests
+    /// to a group-scoped admin endpoint
+    /// (`/execute/:group/:job`, `/stop/:group/:job`,
+    /// `/reload/:group`) are accepted with EITHER the master admin
+    /// token OR the group-specific token. Endpoints without a
+    /// group parameter (currently none, but see the gated
+    /// `/jobs` / `/running` paths when
+    /// `security.expose_*_publicly=false`) only accept the master.
+    ///
+    /// h2ck.me F-CM-2: the master admin token is all-or-nothing.
+    /// When multiple integration partners share the token, one
+    /// compromised caller can trigger every job in the fleet.
+    /// Per-group tokens scope blast radius to the group the
+    /// caller was authorised for. Empty map (the default) = no
+    /// change from prior behaviour.
+    ///
+    /// Values are ENV VAR NAMES, not raw tokens — the file
+    /// never contains a token. Missing env vars emit a WARN at
+    /// boot and the group falls back to master-only.
+    #[serde(default, alias = "perGroupTokenEnvs")]
+    pub per_group_token_envs: BTreeMap<String, String>,
 }
 
 impl Default for SecurityConfig {
@@ -254,6 +277,7 @@ impl Default for SecurityConfig {
             reload_min_interval_secs: default_reload_min_interval_secs(),
             expose_jobs_publicly: true,
             expose_running_publicly: true,
+            per_group_token_envs: BTreeMap::new(),
         }
     }
 }
@@ -388,6 +412,24 @@ impl AppConfig {
             .filter(|s| !s.is_empty())
     }
 
+    /// Resolve the per-group token map by reading each configured
+    /// env var. Groups whose env var is unset / empty are silently
+    /// omitted from the returned map (a WARN is emitted in
+    /// `boot_diagnostics` so ops sees the misconfiguration).
+    /// Called once at boot.
+    pub fn resolve_per_group_tokens(&self) -> BTreeMap<String, String> {
+        let mut out = BTreeMap::new();
+        for (group, env_var) in &self.security.per_group_token_envs {
+            match std::env::var(env_var) {
+                Ok(v) if !v.is_empty() => {
+                    out.insert(group.clone(), v);
+                }
+                _ => {} // WARN emitted by boot_diagnostics
+            }
+        }
+        out
+    }
+
     /// Emit one INFO-level diagnostic line per config field that
     /// meaningfully differs from a "fresh install" baseline, and
     /// one WARN per field that is parsed-but-unwired or set to a
@@ -479,6 +521,25 @@ impl AppConfig {
             tracing::warn!(
                 "security: expose_running_publicly=true — GET /running and /running/{{group}} reveal what is currently mid-execution to any anonymous caller (time-attack signal). Set security.expose_running_publicly=false to require the admin token."
             );
+        }
+        // Per-group token diagnostics (h2ck.me F-CM-2). List every
+        // configured group; WARN for any env var that isn't
+        // actually set at boot so ops can spot typos before the
+        // first request lands.
+        if !self.security.per_group_token_envs.is_empty() {
+            let resolved = self.resolve_per_group_tokens();
+            tracing::info!(
+                "security: per_group_token_envs configured for {} group(s); {} resolved from env",
+                self.security.per_group_token_envs.len(),
+                resolved.len(),
+            );
+            for (group, env_var) in &self.security.per_group_token_envs {
+                if !resolved.contains_key(group) {
+                    tracing::warn!(
+                        "security: per_group_token_envs[{group}]={env_var} is unset or empty — group {group} falls back to master admin token only",
+                    );
+                }
+            }
         }
     }
 }

@@ -34,7 +34,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -138,6 +138,14 @@ pub struct AppState {
     /// a non-loopback bind with `None` is caught before we ever
     /// serve a request.
     pub admin_token: Option<Arc<String>>,
+    /// Optional per-group tokens (h2ck.me F-CM-2). Empty map =
+    /// current behaviour (master admin token is the only credential
+    /// accepted). When populated, group-scoped admin endpoints
+    /// accept EITHER the master token OR the group-specific token.
+    /// Keyed by group name; values are the resolved token strings
+    /// (never the env-var name). Missing groups only accept the
+    /// master.
+    pub per_group_tokens: Arc<BTreeMap<String, Arc<String>>>,
     pub reload_gate: Arc<ReloadGate>,
 }
 
@@ -151,6 +159,7 @@ impl AppState {
             cfg,
             scheduler,
             admin_token: None,
+            per_group_tokens: Arc::new(BTreeMap::new()),
             reload_gate: Arc::new(ReloadGate::new()),
         }
     }
@@ -160,6 +169,20 @@ impl AppState {
     /// present a matching `Authorization: Bearer <token>` header.
     pub fn with_admin_token(mut self, token: impl Into<String>) -> Self {
         self.admin_token = Some(Arc::new(token.into()));
+        self
+    }
+
+    /// Install per-group tokens. Each entry allows the given group's
+    /// scoped endpoints to be authenticated with the group-specific
+    /// token in addition to the master token. Group names must
+    /// match the DSL-derived group (see `dsl::loader::group_from_path`).
+    pub fn with_per_group_tokens<I>(mut self, tokens: I) -> Self
+    where
+        I: IntoIterator<Item = (String, String)>,
+    {
+        let map: BTreeMap<String, Arc<String>> =
+            tokens.into_iter().map(|(k, v)| (k, Arc::new(v))).collect();
+        self.per_group_tokens = Arc::new(map);
         self
     }
 }
@@ -231,6 +254,13 @@ where
 /// refuse-to-start check, this keeps zero-config loopback dev
 /// working without ever leaving a state-changing endpoint open on
 /// a non-loopback bind by accident.
+///
+/// **Per-group tokens (h2ck.me F-CM-2)**: when
+/// `state.per_group_tokens` has an entry for the group extracted
+/// from the URL path, the presented token is accepted if it
+/// matches EITHER the master admin token OR the group-specific
+/// token. Both comparisons use `ConstantTimeEq` and run
+/// unconditionally so a caller can't time which token was checked.
 pub async fn admin_gate(
     State(state): State<AppState>,
     // ConnectInfo is populated by `into_make_service_with_connect_info`
@@ -242,7 +272,7 @@ pub async fn admin_gate(
     req: axum::http::Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, CronManagerError> {
-    let Some(expected) = state.admin_token.as_deref() else {
+    let Some(master) = state.admin_token.as_deref() else {
         return Ok(next.run(req).await);
     };
     // Resolve the client-IP hash + matched route once so both
@@ -274,17 +304,53 @@ pub async fn admin_gate(
         Some(bytes) => bytes,
         None => return Err(reject("missing or malformed Authorization header")),
     };
-    let expected_bytes = expected.as_bytes();
-    // Length check is fine to short-circuit — `ct_eq` returns
-    // `false` unconditionally if lengths differ, but we'd still
-    // like the check itself to be branchless on equal-length
-    // inputs. `subtle::ConstantTimeEq` handles that.
-    if presented.len() != expected_bytes.len()
-        || !bool::from(presented.as_slice().ct_eq(expected_bytes))
-    {
+
+    // Master-token check — always run so a wrong per-group-only
+    // token can't be distinguished by timing from a wrong master
+    // (subtle::ConstantTimeEq handles the byte comparison).
+    let master_ok = ct_token_matches(&presented, master.as_bytes());
+
+    // Per-group token check (h2ck.me F-CM-2) — only meaningful when
+    // the URL has a group segment AND the per_group_tokens map has
+    // an entry for it. Groups without an entry fall back to
+    // master-only.
+    let group_ok = extract_group_from_path(req.uri().path())
+        .and_then(|g| state.per_group_tokens.get(g))
+        .map(|group_token| ct_token_matches(&presented, group_token.as_bytes()))
+        .unwrap_or(false);
+
+    if !(master_ok || group_ok) {
         return Err(reject("token does not match expected"));
     }
     Ok(next.run(req).await)
+}
+
+/// Constant-time equality check for token bytes. Length mismatch is
+/// safe to short-circuit — the token length isn't a secret (it's a
+/// fixed operator-chosen constant).
+fn ct_token_matches(presented: &[u8], expected: &[u8]) -> bool {
+    if presented.len() != expected.len() {
+        return false;
+    }
+    bool::from(presented.ct_eq(expected))
+}
+
+/// Extract the group segment from the URL path for the three
+/// group-scoped admin routes (`/execute/{group}/{job}`,
+/// `/stop/{group}/{job}`, `/reload/{group}`). Returns `None` for
+/// any other path — group-less admin routes fall back to
+/// master-only authentication.
+fn extract_group_from_path(path: &str) -> Option<&str> {
+    let mut parts = path.strip_prefix('/')?.splitn(3, '/');
+    match parts.next()? {
+        "execute" | "stop" | "reload" => {}
+        _ => return None,
+    }
+    let group = parts.next()?;
+    if group.is_empty() {
+        return None;
+    }
+    Some(group)
 }
 
 /// Extract the token after `Bearer ` (case-insensitive on the
@@ -729,5 +795,69 @@ mod tests {
         let err = refuse_to_start_without_token(&cfg, "0.0.0.0:8080", false).unwrap_err();
         assert!(err.contains("0.0.0.0"));
         assert!(err.contains(&cfg.admin.bearer_token_env));
+    }
+
+    // h2ck.me F-CM-2 — per-group tokens. Unit-level pins for the
+    // pure helper functions. Router-level end-to-end pins live in
+    // tests/security_hardening.rs.
+    #[test]
+    fn extract_group_from_execute_path() {
+        assert_eq!(
+            extract_group_from_path("/execute/samples/hello"),
+            Some("samples")
+        );
+        assert_eq!(
+            extract_group_from_path("/execute/group-a/nested/job"),
+            Some("group-a")
+        );
+    }
+
+    #[test]
+    fn extract_group_from_stop_path() {
+        assert_eq!(
+            extract_group_from_path("/stop/samples/hello"),
+            Some("samples")
+        );
+    }
+
+    #[test]
+    fn extract_group_from_reload_path() {
+        assert_eq!(extract_group_from_path("/reload/samples"), Some("samples"));
+    }
+
+    #[test]
+    fn extract_group_returns_none_for_non_admin_paths() {
+        // Read-only and unknown paths — the gate short-circuits
+        // to master-only.
+        assert_eq!(extract_group_from_path("/health"), None);
+        assert_eq!(extract_group_from_path("/jobs/samples"), None);
+        assert_eq!(extract_group_from_path("/running/samples"), None);
+        assert_eq!(extract_group_from_path("/"), None);
+        assert_eq!(extract_group_from_path(""), None);
+    }
+
+    #[test]
+    fn extract_group_returns_none_for_empty_group_segment() {
+        // Guard against `/execute//job` which would otherwise slip
+        // a caller past the per_group_tokens check with the empty
+        // string as the group.
+        assert_eq!(extract_group_from_path("/execute//job"), None);
+        assert_eq!(extract_group_from_path("/reload/"), None);
+    }
+
+    #[test]
+    fn ct_token_matches_length_mismatch_returns_false() {
+        assert!(!ct_token_matches(b"short", b"longer-token"));
+        assert!(!ct_token_matches(b"", b"nonempty"));
+    }
+
+    #[test]
+    fn ct_token_matches_equal_bytes_returns_true() {
+        assert!(ct_token_matches(b"exact", b"exact"));
+    }
+
+    #[test]
+    fn ct_token_matches_different_same_length_returns_false() {
+        assert!(!ct_token_matches(b"AAAA", b"BBBB"));
     }
 }

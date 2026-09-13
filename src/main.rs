@@ -104,10 +104,18 @@ async fn main() -> anyhow::Result<()> {
     scheduler.register_all(jobs.into_iter().map(|j| j.spec));
     tracing::info!("scheduler: {} job(s) registered", job_count);
 
+    // Resolve per-group tokens (h2ck.me F-CM-2) BEFORE moving cfg
+    // into an Arc — resolve_per_group_tokens reads env vars named
+    // by cfg.security.per_group_token_envs. Empty map for
+    // deployments that don't opt in.
+    let per_group_tokens = cfg.resolve_per_group_tokens();
     let cfg_arc = Arc::new(cfg);
     let mut state = router::AppState::new(cfg_arc.clone(), scheduler);
     if let Some(token) = admin_token {
         state = state.with_admin_token(token);
+    }
+    if !per_group_tokens.is_empty() {
+        state = state.with_per_group_tokens(per_group_tokens);
     }
     let app = router::build(state);
 
