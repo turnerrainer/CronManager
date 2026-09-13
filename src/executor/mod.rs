@@ -96,11 +96,11 @@ impl ExecutorBundle {
                     group,
                     name
                 ),
-                JobKind::Exec { command, .. } => tracing::debug!(
+                JobKind::Exec { argv, .. } => tracing::debug!(
                     "shell: attempt {}/{} for {} ({}/{})",
                     attempt,
                     max_attempts,
-                    command,
+                    argv.join(" "),
                     group,
                     name
                 ),
@@ -113,12 +113,9 @@ impl ExecutorBundle {
                     .await
                     .map(HttpDispatchResult::from_ok)
                     .map_err(HttpDispatchResult::from_err),
-                JobKind::Exec {
-                    command,
-                    allowed_envs,
-                } => self
+                JobKind::Exec { argv, allowed_envs } => self
                     .shell
-                    .execute(command, allowed_envs, &extras.env_overrides, cancel.clone())
+                    .execute(argv, allowed_envs, &extras.env_overrides, cancel.clone())
                     .await
                     .map(HttpDispatchResult::from_shell_ok)
                     .map_err(HttpDispatchResult::from_shell_err),
