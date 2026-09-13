@@ -7,10 +7,15 @@ config, how to fix one, and which config shape is the current
 best-practice baseline.
 
 **Current release**: `0.2.0-alpha` (see `VERSION`, `Cargo.toml`,
-`CHANGELOG.md`). Branch of record for active work: `dev`. First
-stable target: `v1.0.0` on `main`. `main` is intentionally frozen
-at `0.1.4-alpha` until the project reaches prod-ready state —
-alphas ship from `dev` only.
+`CHANGELOG.md`). Branch of record for active work: `dev` — this is
+also the default branch on GitHub. There is no `main` branch yet;
+alphas are cut as git tags on `dev` (`v0.1.4-alpha` → `fe1f517`,
+`v0.2.0-alpha` → `7d72714`, both on dev's history) and published
+as GitHub Releases (`v0.1.4-alpha` marked Latest / stable,
+`v0.2.0-alpha` marked Pre-release). `main` will be created and
+tagged only when the project reaches prod-ready state, targeted
+at `v1.0.0`. **Never push a `main` branch or move code there
+without explicit maintainer approval.**
 
 ## What the project is
 
