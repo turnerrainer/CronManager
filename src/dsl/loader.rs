@@ -84,6 +84,15 @@ pub async fn load_all_bounded(
 
 /// Shared traversal. Every caller flows through here so the
 /// hardening rules are enforced exactly once and identically.
+///
+/// **Per-file skip-and-warn (h2ck.me RUNTIME-FINDINGS v1 FN2)** —
+/// a single malformed DSL file no longer aborts the entire boot.
+/// The bad file is logged at ERROR (with the specific reason) and
+/// the walk continues; the rest of the tree loads normally.
+/// Rationale: an operator adding a new job with a typo should not
+/// stop every other scheduled job in the fleet from firing.
+/// Directory-walk errors (`read_dir`) remain fatal — those signal
+/// a broken filesystem posture, not a per-file typo.
 pub fn load_all_with_policy(
     root: &Path,
     policy: &LoadPolicy,
@@ -96,7 +105,31 @@ pub fn load_all_with_policy(
         );
         return Ok(out);
     }
-    walk(root, root, policy, &mut out)?;
+    let mut yaml_files_seen: usize = 0;
+    let mut files_failed: usize = 0;
+    walk(
+        root,
+        root,
+        policy,
+        &mut out,
+        &mut yaml_files_seen,
+        &mut files_failed,
+    )?;
+    if files_failed > 0 {
+        tracing::warn!(
+            files_failed,
+            files_seen = yaml_files_seen,
+            "dsl: {}/{} file(s) failed to load — see preceding ERROR lines. Other files loaded successfully; scheduler continues.",
+            files_failed,
+            yaml_files_seen,
+        );
+    }
+    if yaml_files_seen > 0 && out.is_empty() {
+        tracing::warn!(
+            "dsl: no jobs loaded — every DSL file under {} failed to parse. Scheduler has 0 jobs registered.",
+            root.display(),
+        );
+    }
     tracing::info!("loaded {} job(s) from {}", out.len(), root.display());
     Ok(out)
 }
@@ -106,6 +139,8 @@ fn walk(
     current: &Path,
     policy: &LoadPolicy,
     out: &mut Vec<LoadedJob>,
+    yaml_files_seen: &mut usize,
+    files_failed: &mut usize,
 ) -> Result<(), CronManagerError> {
     let entries = std::fs::read_dir(current)?;
     // Sort for deterministic load order — same DSL directory
@@ -115,10 +150,19 @@ fn walk(
     paths.sort();
     for path in paths {
         if path.is_dir() {
-            walk(root, &path, policy, out)?;
+            walk(root, &path, policy, out, yaml_files_seen, files_failed)?;
         } else if is_yaml(&path) {
-            for loaded in load_file_with_policy(root, &path, policy)? {
-                out.push(loaded);
+            *yaml_files_seen += 1;
+            match load_file_with_policy(root, &path, policy) {
+                Ok(loaded) => out.extend(loaded),
+                Err(err) => {
+                    *files_failed += 1;
+                    tracing::error!(
+                        source_path = %path.display(),
+                        error = %err,
+                        "dsl: skipping file due to load error; other files continue to load",
+                    );
+                }
             }
         }
     }
@@ -531,39 +575,86 @@ mod tests {
     }
 
     #[test]
-    fn bad_cron_expression_fails_load() {
+    fn bad_cron_expression_fails_per_file_load() {
+        // Per-file error: load_file_with_policy returns Err. The
+        // tree-level walker (load_all) SKIPS-AND-WARNS on per-file
+        // errors (h2ck.me FN2) — see the tree-level tests below.
         let tmp = TempDir::new().unwrap();
         write(
             tmp.path(),
             "http/bad.yaml",
             "b:\n  trigger: \"not a cron\"\n  type: http\n  method: GET\n  url: https://x\n",
         );
-        let err = load_all(tmp.path()).unwrap_err();
+        let file = tmp.path().join("http/bad.yaml");
+        let err = load_file(tmp.path(), &file).unwrap_err();
         assert!(matches!(err, CronManagerError::InvalidCron { .. }));
     }
 
     #[test]
-    fn unknown_http_method_fails_load() {
+    fn unknown_http_method_fails_per_file_load() {
         let tmp = TempDir::new().unwrap();
         write(
             tmp.path(),
             "http/bad.yaml",
             "b:\n  trigger: off\n  type: http\n  method: FLOOP\n  url: https://x\n",
         );
-        let err = load_all(tmp.path()).unwrap_err();
+        let file = tmp.path().join("http/bad.yaml");
+        let err = load_file(tmp.path(), &file).unwrap_err();
         assert!(matches!(err, CronManagerError::InvalidJobDefinition { .. }));
     }
 
     #[test]
-    fn unknown_job_type_fails_load() {
+    fn unknown_job_type_fails_per_file_load() {
         let tmp = TempDir::new().unwrap();
         write(
             tmp.path(),
             "x.yaml",
             "b:\n  trigger: off\n  type: telnet\n  method: GET\n  url: https://x\n",
         );
-        let err = load_all(tmp.path()).unwrap_err();
+        let file = tmp.path().join("x.yaml");
+        let err = load_file(tmp.path(), &file).unwrap_err();
         assert!(matches!(err, CronManagerError::InvalidJobDefinition { .. }));
+    }
+
+    // h2ck.me RUNTIME-FINDINGS v1 FN2 — a single bad DSL file must
+    // not abort the whole load. The bad file is logged and skipped;
+    // sibling good files still register.
+    #[test]
+    fn load_all_skips_bad_file_and_loads_good_ones() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "http/good.yaml",
+            "good:\n  trigger: off\n  type: http\n  method: GET\n  url: https://example.com/\n",
+        );
+        write(
+            tmp.path(),
+            "http/bad.yaml",
+            "bad:\n  trigger: off\n  type: telnet\n  method: GET\n  url: https://x\n",
+        );
+        let jobs = load_all(tmp.path()).unwrap();
+        assert_eq!(jobs.len(), 1, "expected only 'good' job to load");
+        assert_eq!(jobs[0].spec.key.name, "good");
+    }
+
+    // h2ck.me FN2 corollary: if every file fails, load_all still
+    // returns Ok(empty). The service boots with 0 jobs; ops sees the
+    // ERROR / WARN lines and can fix the tree without a restart loop.
+    #[test]
+    fn load_all_returns_empty_when_every_file_fails() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "one.yaml",
+            "b:\n  trigger: off\n  type: telnet\n  method: GET\n  url: https://x\n",
+        );
+        write(
+            tmp.path(),
+            "two.yaml",
+            "b:\n  trigger: off\n  type: http\n  method: FLOOP\n  url: https://x\n",
+        );
+        let jobs = load_all(tmp.path()).unwrap();
+        assert!(jobs.is_empty());
     }
 
     #[test]
@@ -601,7 +692,10 @@ mod tests {
             min_cron_interval_secs: 10,
             block_private_networks: true,
         };
-        let err = load_all_with_policy(tmp.path(), &policy).unwrap_err();
+        // Per-file error path — FN2 skips at the tree level; here
+        // we assert the underlying rejection is intact.
+        let file = tmp.path().join("http/big.yaml");
+        let err = load_file_with_policy(tmp.path(), &file, &policy).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("max_dsl_file_bytes") && msg.contains("YAML anchor bomb"),
@@ -623,7 +717,8 @@ mod tests {
             min_cron_interval_secs: 10,
             block_private_networks: true,
         };
-        let err = load_all_with_policy(tmp.path(), &policy).unwrap_err();
+        let file = tmp.path().join("http/rc.yaml");
+        let err = load_file_with_policy(tmp.path(), &file, &policy).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("retryCount") && msg.contains("max_retry_count"),
@@ -646,7 +741,8 @@ mod tests {
             min_cron_interval_secs: 10,
             block_private_networks: true,
         };
-        let err = load_all_with_policy(tmp.path(), &policy).unwrap_err();
+        let file = tmp.path().join("attack/meta.yaml");
+        let err = load_file_with_policy(tmp.path(), &file, &policy).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("169.254.169.254"), "err was: {msg}");
         assert!(msg.contains("non-routable"), "err was: {msg}");
@@ -666,7 +762,8 @@ mod tests {
             min_cron_interval_secs: 10,
             block_private_networks: true,
         };
-        let err = load_all_with_policy(tmp.path(), &policy).unwrap_err();
+        let file = tmp.path().join("attack/loop.yaml");
+        let err = load_file_with_policy(tmp.path(), &file, &policy).unwrap_err();
         assert!(err.to_string().contains("non-routable"));
     }
 
@@ -686,7 +783,8 @@ mod tests {
             min_cron_interval_secs: 10,
             block_private_networks: true,
         };
-        let err = load_all_with_policy(tmp.path(), &policy).unwrap_err();
+        let file = tmp.path().join("attack/mapped.yaml");
+        let err = load_file_with_policy(tmp.path(), &file, &policy).unwrap_err();
         assert!(err.to_string().contains("non-routable"));
     }
 
@@ -704,7 +802,8 @@ mod tests {
             min_cron_interval_secs: 10,
             block_private_networks: true,
         };
-        let err = load_all_with_policy(tmp.path(), &policy).unwrap_err();
+        let file = tmp.path().join("attack/file.yaml");
+        let err = load_file_with_policy(tmp.path(), &file, &policy).unwrap_err();
         assert!(err.to_string().contains("scheme"));
     }
 
@@ -763,7 +862,8 @@ mod tests {
             min_cron_interval_secs: 10,
             block_private_networks: true,
         };
-        let err = load_all_with_policy(tmp.path(), &policy).unwrap_err();
+        let file = tmp.path().join("attack/ui.yaml");
+        let err = load_file_with_policy(tmp.path(), &file, &policy).unwrap_err();
         assert!(err.to_string().contains("169.254.169.254"));
     }
 
