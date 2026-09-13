@@ -355,6 +355,69 @@ async fn trailing_slash_running_route_matches_no_slash() {
     assert_eq!(a, b);
 }
 
+// h2ck.me RUNTIME-FINDINGS v1 FN5 — slow-drip body upload used to
+// hold a Tokio task past `limits.request_timeout_secs` because the
+// body-read wasn't bounded. tower_http::TimeoutLayer now wraps the
+// entire request/response future. The regression pin drives a raw
+// TCP socket that promises a 100-byte body via Content-Length and
+// then sends nothing — the server must close the connection within
+// ~request_timeout_secs, not hang.
+#[tokio::test]
+async fn slow_body_upload_hits_request_deadline() {
+    use cronmanager::config::{AppConfig, Limits};
+    use std::time::{Duration, Instant};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let cfg = AppConfig {
+        app_root_path: std::env::temp_dir(),
+        limits: Limits {
+            request_timeout_secs: 1,
+            ..Limits::default()
+        },
+        ..AppConfig::default()
+    };
+    let bundle = ExecutorBundle::new(&cfg, Arc::new(NoopRecorder)).unwrap();
+    let scheduler = Scheduler::new(bundle);
+    let state = AppState::new(Arc::new(cfg), scheduler);
+    let app = router::build(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
+    // Promise a 100-byte body, send zero. If TimeoutLayer isn't
+    // wired the read below hangs indefinitely and the test times
+    // out at cargo's default 60s.
+    let request = format!(
+        "POST /execute/nosuch/nope HTTP/1.1\r\n\
+         Host: {addr}\r\n\
+         Content-Length: 100\r\n\
+         Content-Type: text/plain\r\n\
+         \r\n"
+    );
+    sock.write_all(request.as_bytes()).await.unwrap();
+    sock.flush().await.unwrap();
+
+    // Read whatever the server hands back (or EOF on connection
+    // close). Bound at 5s — the TimeoutLayer fires at 1s so any
+    // sane wiring finishes well before this.
+    let start = Instant::now();
+    let mut buf = Vec::with_capacity(1024);
+    let read = tokio::time::timeout(Duration::from_secs(5), sock.read_to_end(&mut buf)).await;
+    let elapsed = start.elapsed();
+    assert!(
+        read.is_ok(),
+        "server never closed the slow-body connection — TimeoutLayer not wired"
+    );
+    assert!(
+        elapsed < Duration::from_secs(4),
+        "server took {}ms to close the slow-body connection — expected < ~1s + overhead",
+        elapsed.as_millis()
+    );
+}
+
 #[tokio::test]
 async fn request_body_exceeding_limit_returns_413() {
     // `limits.max_request_bytes` is enforced via
