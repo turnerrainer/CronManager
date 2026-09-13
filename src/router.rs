@@ -322,6 +322,12 @@ pub fn build(state: AppState) -> Router {
         // for the values + rationale.
         .layer(axum::middleware::from_fn(
             crate::security_headers::security_headers_middleware,
+        ))
+        // Audit LOG-v1 FN-LOG-3: emit one INFO line per completed
+        // request for SOC2/ISO27001 access-log compliance. See
+        // src/access_log.rs.
+        .layer(axum::middleware::from_fn(
+            crate::access_log::access_log_middleware,
         ));
     // Whole-request wall-clock deadline (h2ck.me RUNTIME-FINDINGS
     // v1 FN5). The upstream/executor timeouts only cover the

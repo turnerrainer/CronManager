@@ -11,11 +11,15 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Audit LOG-v1 FN-LOG-1: emit ANSI colour codes only when stderr is
+    // a TTY. Under Docker / systemd, ship plain-text logs for SIEM.
+    use std::io::IsTerminal;
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
+        .with_ansi(std::io::stderr().is_terminal())
         .init();
 
     let version = env!("CARGO_PKG_VERSION");
