@@ -264,8 +264,10 @@ struct RawJob {
     method: Option<String>,
     url: Option<String>,
 
-    // Shell fields
-    command: Option<String>,
+    // Shell fields. `command:` accepts EITHER a whitespace-
+    // tokenised string (JVM parity) OR an explicit YAML list
+    // (h2ck.me FN7/FN8). Both normalise to argv at load time.
+    command: Option<RawCommand>,
     #[serde(default, rename = "allowedEnvs")]
     allowed_envs: Option<Vec<String>>,
 }
@@ -275,6 +277,40 @@ struct RawJob {
 enum RawTrigger {
     Bool(bool),
     Str(String),
+}
+
+/// `command:` field shape. The string form is whitespace-
+/// tokenised (JVM `Runtime.exec(String)` parity — no shell
+/// interpretation, no quoting). The list form is passed through
+/// verbatim as argv, so an operator who genuinely needs shell
+/// semantics writes `command: ['/bin/sh', '-c', 'sleep 30']`.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum RawCommand {
+    String(String),
+    List(Vec<String>),
+}
+
+impl RawCommand {
+    /// Normalise both forms to argv. Empty inputs (empty string,
+    /// whitespace-only string, empty list) are rejected — those
+    /// are almost certainly authoring bugs.
+    fn into_argv(self, key: &JobKey, source: &Path) -> Result<Vec<String>, CronManagerError> {
+        let argv: Vec<String> = match self {
+            RawCommand::String(s) => s.split_whitespace().map(str::to_string).collect(),
+            RawCommand::List(v) => v,
+        };
+        if argv.is_empty() || argv[0].is_empty() {
+            return Err(CronManagerError::InvalidJobDefinition {
+                source_path: source.display().to_string(),
+                reason: format!(
+                    "job '{}' has type: exec but the command field is empty; specify at least the program name",
+                    key.name
+                ),
+            });
+        }
+        Ok(argv)
+    }
 }
 
 impl RawJob {
@@ -379,7 +415,7 @@ impl RawJob {
                 JobKind::Http { method, url }
             }
             "exec" => {
-                let command =
+                let raw_command =
                     self.command
                         .ok_or_else(|| CronManagerError::InvalidJobDefinition {
                             source_path: source.display().to_string(),
@@ -388,8 +424,9 @@ impl RawJob {
                                 key.name
                             ),
                         })?;
+                let argv = raw_command.into_argv(&key, source)?;
                 JobKind::Exec {
-                    command,
+                    argv,
                     allowed_envs: self.allowed_envs.unwrap_or_default(),
                 }
             }
@@ -512,6 +549,87 @@ mod tests {
         let root = Path::new("/dsl");
         let file = Path::new("/dsl/simple.yml");
         assert_eq!(group_from_path(root, file), "simple");
+    }
+
+    // h2ck.me FN7 — string form (JVM parity): whitespace-tokenised
+    // into argv at load, no shell interpretation.
+    #[test]
+    fn exec_command_string_form_tokenises_on_whitespace() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "shell/j.yaml",
+            "j:\n  trigger: off\n  type: exec\n  command: /bin/echo hello world\n",
+        );
+        let jobs = load_all(tmp.path()).unwrap();
+        assert_eq!(jobs.len(), 1);
+        match &jobs[0].spec.kind {
+            JobKind::Exec { argv, .. } => {
+                assert_eq!(
+                    argv,
+                    &vec![
+                        "/bin/echo".to_string(),
+                        "hello".to_string(),
+                        "world".to_string(),
+                    ]
+                );
+            }
+            other => panic!("expected Exec, got {other:?}"),
+        }
+    }
+
+    // h2ck.me FN8 — YAML list form: passed through verbatim as
+    // argv, so `sh -c "…"` semantics are available without the
+    // tokeniser corrupting the payload.
+    #[test]
+    fn exec_command_list_form_preserves_argv() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "shell/j.yaml",
+            "j:\n  trigger: off\n  type: exec\n  command: ['/bin/sh', '-c', 'sleep 30; echo done']\n",
+        );
+        let jobs = load_all(tmp.path()).unwrap();
+        assert_eq!(jobs.len(), 1);
+        match &jobs[0].spec.kind {
+            JobKind::Exec { argv, .. } => {
+                assert_eq!(
+                    argv,
+                    &vec![
+                        "/bin/sh".to_string(),
+                        "-c".to_string(),
+                        "sleep 30; echo done".to_string(),
+                    ]
+                );
+            }
+            other => panic!("expected Exec, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exec_command_empty_string_rejected() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "shell/j.yaml",
+            "j:\n  trigger: off\n  type: exec\n  command: \"   \"\n",
+        );
+        let file = tmp.path().join("shell/j.yaml");
+        let err = load_file(tmp.path(), &file).unwrap_err();
+        assert!(err.to_string().contains("empty"), "err was: {err}");
+    }
+
+    #[test]
+    fn exec_command_empty_list_rejected() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "shell/j.yaml",
+            "j:\n  trigger: off\n  type: exec\n  command: []\n",
+        );
+        let file = tmp.path().join("shell/j.yaml");
+        let err = load_file(tmp.path(), &file).unwrap_err();
+        assert!(err.to_string().contains("empty"), "err was: {err}");
     }
 
     #[test]

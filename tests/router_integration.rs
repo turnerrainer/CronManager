@@ -290,7 +290,7 @@ async fn execute_slow_shell_job_appears_in_running_snapshot() {
         window: TimeWindow::default(),
         retry: RetryPolicy::default(),
         kind: JobKind::Exec {
-            command: "/bin/sleep 2".into(),
+            argv: vec!["/bin/sleep".into(), "2".into()],
             allowed_envs: vec![],
         },
     };
@@ -515,7 +515,7 @@ async fn double_execute_returns_409() {
         window: TimeWindow::default(),
         retry: RetryPolicy::default(),
         kind: JobKind::Exec {
-            command: "/bin/sleep 3".into(),
+            argv: vec!["/bin/sleep".into(), "3".into()],
             allowed_envs: vec![],
         },
     };

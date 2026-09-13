@@ -473,7 +473,7 @@ mod tests {
             window: TimeWindow::default(),
             retry: RetryPolicy::default(),
             kind: JobKind::Exec {
-                command: "/bin/sleep 3".into(),
+                argv: vec!["/bin/sleep".into(), "3".into()],
                 allowed_envs: vec![],
             },
         }

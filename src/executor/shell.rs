@@ -48,14 +48,17 @@ impl ShellExecutor {
 
     pub async fn execute(
         &self,
-        command: &str,
+        argv: &[String],
         allowed_envs: &[String],
         overrides: &[(String, String)],
         cancel: Arc<Notify>,
     ) -> Result<ShellAttempt, CronManagerError> {
-        let (program, args) = split_command(command)?;
-        let mut cmd = Command::new(&program);
-        cmd.args(&args);
+        let program = argv
+            .first()
+            .ok_or_else(|| CronManagerError::BadRequest("shell job argv is empty".into()))?;
+        let args = &argv[1..];
+        let mut cmd = Command::new(program);
+        cmd.args(args);
         cmd.current_dir(&*self.app_root);
         cmd.env_clear();
         for name in allowed_envs {
@@ -73,7 +76,7 @@ impl ShellExecutor {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
-        tracing::debug!("shell: {} {:?}", program, args);
+        tracing::debug!("shell: {} {:?}", program, &argv[1..]);
         let mut child = cmd.spawn().map_err(CronManagerError::Io)?;
         let stdout = child
             .stdout
@@ -190,19 +193,10 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-/// Whitespace-split with no shell interpretation — matches JVM
-/// `Runtime.exec(String)` behaviour. Values containing spaces
-/// aren't quotable; callers who need that should invoke `sh -c
-/// "…"` explicitly in their DSL.
-fn split_command(s: &str) -> Result<(String, Vec<String>), CronManagerError> {
-    let mut parts = s.split_whitespace();
-    let program = parts
-        .next()
-        .ok_or_else(|| CronManagerError::BadRequest("empty command".into()))?
-        .to_string();
-    let args: Vec<String> = parts.map(|s| s.to_string()).collect();
-    Ok((program, args))
-}
+// NB: the previous inline `split_command` helper moved to the DSL
+// loader as `RawCommand::into_argv` (h2ck.me FN7/FN8). The executor
+// no longer parses the command surface — the loader always hands
+// it a normalised argv.
 
 #[cfg(test)]
 mod tests {
@@ -236,13 +230,17 @@ mod tests {
         c
     }
 
+    fn argv(script: &str) -> Vec<String> {
+        vec![script.to_string()]
+    }
+
     #[tokio::test]
     async fn successful_script_returns_stdout() {
         let (dir, script) = tempscript("#!/usr/bin/env bash\necho done\n");
         let cfg = cfg_with_root(dir.path().to_path_buf());
         let exec = ShellExecutor::new(&cfg);
         let out = exec
-            .execute(&script, &[], &[], Arc::new(Notify::new()))
+            .execute(&argv(&script), &[], &[], Arc::new(Notify::new()))
             .await
             .unwrap();
         assert_eq!(out.exit_code, 0);
@@ -255,7 +253,7 @@ mod tests {
         let cfg = cfg_with_root(dir.path().to_path_buf());
         let exec = ShellExecutor::new(&cfg);
         let err = exec
-            .execute(&script, &[], &[], Arc::new(Notify::new()))
+            .execute(&argv(&script), &[], &[], Arc::new(Notify::new()))
             .await
             .unwrap_err();
         assert!(matches!(err, CronManagerError::ShellFailed { .. }));
@@ -268,7 +266,7 @@ mod tests {
         cfg.limits.shell_timeout_secs = 1;
         let exec = ShellExecutor::new(&cfg);
         let err = exec
-            .execute(&script, &[], &[], Arc::new(Notify::new()))
+            .execute(&argv(&script), &[], &[], Arc::new(Notify::new()))
             .await
             .unwrap_err();
         assert!(matches!(err, CronManagerError::ShellTimeout { seconds: 1 }));
@@ -285,7 +283,7 @@ mod tests {
         let exec = ShellExecutor::new(&cfg);
         let out = exec
             .execute(
-                &script,
+                &argv(&script),
                 &["HELLO_WORLD".to_string()],
                 &[],
                 Arc::new(Notify::new()),
@@ -306,7 +304,7 @@ mod tests {
         let exec = ShellExecutor::new(&cfg);
         let out = exec
             .execute(
-                &script,
+                &argv(&script),
                 &["FOO".to_string()],
                 &[
                     ("FOO".to_string(), "yes".to_string()),
@@ -327,7 +325,7 @@ mod tests {
         let exec = ShellExecutor::new(&cfg);
         let out = exec
             .execute(
-                &script,
+                &argv(&script),
                 &["HELLO_WORLD".to_string()],
                 &[("HELLO_WORLD".to_string(), "override".to_string())],
                 Arc::new(Notify::new()),
@@ -337,15 +335,34 @@ mod tests {
         assert!(out.stdout.contains("v=override"));
     }
 
-    #[test]
-    fn split_command_whitespace() {
-        let (p, args) = split_command("./bin/x --flag  1  2").unwrap();
-        assert_eq!(p, "./bin/x");
-        assert_eq!(args, vec!["--flag", "1", "2"]);
+    // h2ck.me FN7/FN8 — the executor now accepts an argv vector
+    // directly. `sh -c "…"` semantics are usable via the DSL's
+    // list form. This exercises the multi-argument path end-to-end.
+    #[tokio::test]
+    async fn argv_list_form_runs_sh_dash_c() {
+        let cfg = cfg_with_root(std::env::temp_dir());
+        let exec = ShellExecutor::new(&cfg);
+        let argv = vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "printf 'from-sh-dash-c'".to_string(),
+        ];
+        let out = exec
+            .execute(&argv, &[], &[], Arc::new(Notify::new()))
+            .await
+            .unwrap();
+        assert_eq!(out.exit_code, 0);
+        assert_eq!(out.stdout, "from-sh-dash-c");
     }
 
-    #[test]
-    fn split_command_rejects_empty() {
-        assert!(split_command("   ").is_err());
+    #[tokio::test]
+    async fn empty_argv_returns_bad_request() {
+        let cfg = cfg_with_root(std::env::temp_dir());
+        let exec = ShellExecutor::new(&cfg);
+        let err = exec
+            .execute(&[], &[], &[], Arc::new(Notify::new()))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CronManagerError::BadRequest(_)));
     }
 }

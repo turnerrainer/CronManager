@@ -91,16 +91,30 @@ pub enum JobKind {
         url: String,
     },
     Exec {
-        /// Executable + arguments as a single command string.
-        /// The shell executor tokenises this the same way JVM
-        /// `Runtime.exec(String)` does — whitespace-split, no
-        /// shell interpretation.
-        command: String,
+        /// Executable + arguments as an argv vector. The DSL
+        /// loader accepts EITHER a whitespace-tokenised string
+        /// (JVM-parity form: `command: /bin/foo --flag`) OR an
+        /// explicit list (`command: ['/bin/sh', '-c', 'sleep 30']`
+        /// — h2ck.me FN7/FN8). Both are normalised to argv here.
+        /// The shell executor never invokes a shell interpreter;
+        /// operators who need shell semantics use the list form
+        /// with an explicit `sh -c` prefix.
+        argv: Vec<String>,
         allowed_envs: Vec<String>,
     },
 }
 
 impl JobKind {
+    /// Space-join the argv for display / logging. Preserves the
+    /// human-readable view emitted before the list-form landed.
+    /// Not a valid shell command — use argv directly for exec.
+    pub fn exec_command_display(&self) -> Option<String> {
+        match self {
+            JobKind::Exec { argv, .. } => Some(argv.join(" ")),
+            _ => None,
+        }
+    }
+
     pub fn type_label(&self) -> &'static str {
         match self {
             JobKind::Http { .. } => "http",
