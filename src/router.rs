@@ -43,12 +43,37 @@ use tower_http::limit::RequestBodyLimitLayer;
 /// reload once per commit; the throttle kills the "flood /reload
 /// to amplify a load-time bug" lane (H4). Not part of AppState so
 /// tests can construct a fresh one.
+///
+/// **Memory bound (h2ck.me PR-review v1 nit #1)** — the map used
+/// to grow one entry per group name ever seen. Deployments with
+/// dynamically-named groups (per-tenant, per-branch) would leak
+/// memory in proportion to the group-name churn. The `admit` path
+/// now opportunistically evicts entries older than
+/// [`ReloadGate::EVICT_STALE_MULTIPLIER`]× the window, and hard-
+/// caps the total entry count at [`ReloadGate::MAX_ENTRIES`] by
+/// evicting the oldest entry when full. Both bounds are internal
+/// details — the throttle behaviour for any given group is
+/// unchanged.
 #[derive(Default)]
 pub struct ReloadGate {
     last: Mutex<HashMap<String, Instant>>,
 }
 
 impl ReloadGate {
+    /// Entries older than `EVICT_STALE_MULTIPLIER * min_interval_secs`
+    /// can be dropped: the throttle would let them pass anyway.
+    /// The multiplier is > 1 to give short-window ops loops
+    /// (e.g. `reload_min_interval_secs=5`) headroom against
+    /// clock skew.
+    const EVICT_STALE_MULTIPLIER: u64 = 10;
+
+    /// Hard cap on distinct group names tracked simultaneously.
+    /// A deployment with more than this many distinct groups
+    /// actively reloading is well outside normal ops shape and
+    /// evicting the oldest entry is safe (throttle is best-effort,
+    /// not a security control).
+    const MAX_ENTRIES: usize = 1024;
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -69,8 +94,30 @@ impl ReloadGate {
                 return Err(min_interval_secs - elapsed);
             }
         }
+        // Opportunistic eviction on the write path. Cheap for
+        // typical fleets (single-digit groups); bounded work for
+        // larger ones because we drop entries above the stale
+        // threshold as we scan.
+        let stale_after = min_interval_secs.saturating_mul(Self::EVICT_STALE_MULTIPLIER);
+        if stale_after > 0 {
+            guard.retain(|_, &mut t| now.duration_since(t).as_secs() < stale_after);
+        }
+        // Hard cap defense: if the map is still full after stale
+        // eviction, drop the single oldest entry to make room.
+        if guard.len() >= Self::MAX_ENTRIES && !guard.contains_key(group) {
+            if let Some(oldest_key) = guard.iter().min_by_key(|(_, &t)| t).map(|(k, _)| k.clone()) {
+                guard.remove(&oldest_key);
+            }
+        }
         guard.insert(group.to_string(), now);
         Ok(())
+    }
+
+    /// Test-only inspection helper — number of entries currently
+    /// tracked. Not exposed publicly beyond the crate.
+    #[cfg(test)]
+    pub fn entry_count(&self) -> usize {
+        self.last.lock().unwrap().len()
     }
 }
 
@@ -522,6 +569,49 @@ mod tests {
         assert!(g.admit("x", 0).is_ok());
         // Zero interval = always admit, no state tracking.
         assert!(g.admit("x", 0).is_ok());
+    }
+
+    // PR-review v1 nit #1 — the last-hit map used to grow one
+    // entry per group name ever seen. The hard cap guarantees a
+    // bounded working set under dynamically-named-group churn.
+    #[test]
+    fn reload_gate_hard_caps_entry_count() {
+        let g = ReloadGate::new();
+        // Fill past the cap. Very large min_interval so eviction
+        // via the stale-timeout path is not what limits us — the
+        // hard cap must fire.
+        for i in 0..(ReloadGate::MAX_ENTRIES + 200) {
+            let _ = g.admit(&format!("tenant-{i}"), 3600);
+        }
+        assert!(
+            g.entry_count() <= ReloadGate::MAX_ENTRIES,
+            "expected <= {} entries, got {}",
+            ReloadGate::MAX_ENTRIES,
+            g.entry_count(),
+        );
+    }
+
+    #[test]
+    fn reload_gate_hard_cap_evicts_oldest_first() {
+        let g = ReloadGate::new();
+        for i in 0..ReloadGate::MAX_ENTRIES {
+            let _ = g.admit(&format!("g{i}"), 3600);
+        }
+        // First key hit under the cap.
+        {
+            let guard = g.last.lock().unwrap();
+            assert!(guard.contains_key("g0"));
+        }
+        // Add one more distinct key — this triggers the hard-cap
+        // path which drops the oldest entry ("g0").
+        let _ = g.admit("newcomer", 3600);
+        let guard = g.last.lock().unwrap();
+        assert!(
+            !guard.contains_key("g0"),
+            "oldest entry should have been evicted"
+        );
+        assert!(guard.contains_key("newcomer"));
+        assert_eq!(guard.len(), ReloadGate::MAX_ENTRIES);
     }
 
     #[test]
