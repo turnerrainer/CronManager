@@ -59,6 +59,9 @@ database:
 | `security.min_cron_interval_secs` | integer | `10` | WARN if a cron expression fires more often than this. `0` disables the warning. |
 | `security.stored_response_body_max_bytes` | integer | `65536` (64 KiB) | Cap on `response_body` per history row. Above → head+tail slice with an inline truncation marker. |
 | `security.reload_min_interval_secs` | integer | `60` | Minimum seconds between two `POST /reload/…` calls for the same group. Above → `429 too_many_requests`. `0` disables the throttle. |
+| `security.expose_jobs_publicly` | bool | `true` | When `false`, `GET /jobs`, `/jobs/`, `/jobs/{group}` require the admin bearer token (401 otherwise). Backward-compat default is `true` so an upgrade from `0.1.4-alpha` keeps operator dashboards working; a boot WARN fires when this is left `true` AND a token is configured. |
+| `security.expose_running_publicly` | bool | `true` | Same posture as `expose_jobs_publicly` but for `/running*`. Time-attack signal — flip to `false` for internet-exposed deployments. |
+| `security.per_group_token_envs` | map of `group → env var name` | `{}` | Optional scoped tokens. When populated, requests to `/execute/:group/:job`, `/stop/:group/:job`, `/reload/:group` are accepted with EITHER the master admin token OR the group-specific token (constant-time compare on both). Groups not in the map only accept the master. Values are env var names — the file never contains a raw token. |
 
 ### Security posture
 
@@ -77,9 +80,70 @@ Error: refusing to start on non-loopback bind 0.0.0.0:8080 without
 
 Callers present the token as `Authorization: Bearer <token>`. The
 comparison is constant-time (`subtle::ConstantTimeEq`) and the
-scheme name is case-insensitive per RFC 6750 §2.1. Read-only
-endpoints (`/health`, `/jobs`, `/running`, `/actuator/*`) stay open
-so operator dashboards keep working.
+scheme name is case-insensitive per RFC 6750 §2.1.
+
+Every admin-gate reject emits a structured WARN with a PII-safe
+client-IP hash (SHA-256, 4-byte prefix) and the matched route
+pattern, so a burst attack pattern is derivable from logs without
+exposing raw IPs:
+
+```
+WARN auth: rejected admin request
+     client_ip_hash=a1b2c3d4 route=/execute/:group/:job
+     reason="token does not match expected"
+```
+
+Read-only endpoints (`/health`, `/healthz`, `/actuator/*`) always
+stay public regardless of any other setting. `/jobs*` and
+`/running*` default to public but can be gated per
+`security.expose_jobs_publicly` / `security.expose_running_publicly`.
+
+`admin.trust_network=true` opts out of the boot-time refuse-to-
+start on non-loopback binds without a token; it does NOT disable
+the admin gate itself when a token IS set. A deployment behind a
+mesh authenticating every request can safely flip
+`trust_network=true` and STILL enforce the bearer token as
+belt-and-braces.
+
+### Per-group admin tokens
+
+For deployments where multiple integration partners share access
+to the scheduler, `security.per_group_token_envs` scopes credential
+blast radius:
+
+```yaml
+security:
+  per_group_token_envs:
+    payroll:   PAYROLL_ADMIN_TOKEN
+    logistics: LOGISTICS_ADMIN_TOKEN
+```
+
+Each group listed above accepts either the master `CRONMANAGER_ADMIN_TOKEN`
+OR the group-specific token. Groups not in the map only accept the
+master. Missing env vars emit a WARN at boot and the group falls
+back to master-only (never silently 401s an ops caller who thinks
+they have a group token).
+
+### Environment-aware boot safety gates
+
+Set `APP_ENV` (or `ENVIRONMENT` / `DEPLOY_ENV`) to `production`,
+`staging`, or `test` for any deployment above local dev. In those
+environments boot REFUSES when:
+
+- **Weak or default credentials are detected** — admin token
+  matches `changeit` / `password` / `01234` / `dev-` / `-test` /
+  `test-admin-token` / etc; or is shorter than 32 chars (admin
+  token) / 12 chars (DB password); or is empty.
+- **Unsafe posture flags are set** — `admin.trust_network=true`,
+  `security.block_private_networks=false`, or
+  `security.allow_dangerous_env_overrides=true`.
+
+Both refusals emit a multi-line diagnostic naming each failing
+item with a redacted value (`01****ef`) and its remediation. In
+`APP_ENV=dev` (or unset) the same conditions produce WARN lines
+and boot continues — preserving the zero-config loopback UX.
+
+Unknown values (`APP_ENV=prroduction`) fail-safe to `Production`.
 
 ### Unknown fields are hard errors
 
@@ -190,8 +254,38 @@ Common job fields:
 | `ignoreFailures` | all | If true, absorb all-attempts-failed. Default `false`. |
 | `method` | http | One of `GET`, `POST`, `PUT`, `DELETE`, `PATCH`, `HEAD`, `OPTIONS`. Any other value fails at load. |
 | `url` | http | Full URL. |
-| `command` | exec | Whitespace-tokenised command (matches JVM `Runtime.exec(String)`). No shell interpretation. |
+| `command` | exec | Accepts EITHER a whitespace-tokenised string (JVM `Runtime.exec(String)` parity — no shell interpretation, no quoting) OR an explicit YAML list. See below. |
 | `allowedEnvs` | exec | List of env var names to export from `shell_environment` into the child process. |
+
+### `command:` — two forms
+
+The string form matches JVM parity: whitespace-split, no shell.
+Values containing spaces cannot be quoted; if you need shell
+semantics, use the list form with an explicit `sh -c` prefix.
+
+```yaml
+# String form — one argv element per whitespace-separated token.
+command: /bin/echo hello world
+command: ./scripts/samples/backup.sh /var/lib/data
+```
+
+```yaml
+# List form — each element is one argv entry, verbatim.
+command: ['/bin/sh', '-c', 'sleep 30; echo done']
+command:
+  - /usr/bin/python3
+  - -c
+  - "import time; time.sleep(30); print('done')"
+```
+
+The string `"/bin/sh -c \"sleep 30\""` in string form tokenises to
+`["/bin/sh", "-c", "\"sleep", "30\""]` and the child shell exits
+with `Syntax error: Unterminated quoted string`. That's the
+signature of "use the list form here".
+
+Empty string / empty list is refused at load with `command field
+is empty`. Both forms normalise to a single argv vector before the
+shell executor sees them.
 
 ### Manual-mode literals
 
@@ -215,17 +309,27 @@ For a large bank of copy-paste job samples, see
 
 ## REST API surface
 
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/` | Sentinel string `CronManager started`. |
-| `GET` | `/health` | Liveness probe. Returns `{"status":"ok"}`. |
-| `GET` | `/actuator/health` | Alias for `/health` — kept so operators porting from the JVM version keep the same URL. |
-| `GET` | `/actuator/info` | Minimal build info: `{"name":"cronmanager","version":"…"}`. |
-| `GET` | `/jobs`, `/jobs/`, `/jobs/{group}` | List scheduled jobs. Trailing slash tolerated. |
-| `GET` | `/running`, `/running/`, `/running/{group}` | List jobs currently executing. Trailing slash tolerated. |
-| `POST` | `/execute/{group}/{job}` | Fire a job now. Optional query params for shell jobs are matched against `allowedEnvs`. Returns the running-jobs snapshot. |
-| `POST` | `/stop/{group}/{job}` | Best-effort abort. Returns `{"stopped": bool, "running": [...]}`. |
-| `POST` | `/reload/{group}` | Re-scan `dsl_path` and re-register jobs. Returns `{"reloaded": N}`. Group segment is currently accepted-but-ignored (full-tree reload). |
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| `GET` | `/` | none | Sentinel string `CronManager started`. |
+| `GET` | `/health` | none | Liveness probe. Returns `{"status":"ok"}`. |
+| `GET` | `/healthz` | none | K8s convention alias for `/health` (identical body). Registered so `livenessProbe: httpGet` defaults work without a token. |
+| `GET` | `/actuator/health` | none | JVM URL alias for `/health` (identical body). |
+| `GET` | `/actuator/info` | none | Minimal build info: `{"name":"cronmanager","version":"…"}`. |
+| `GET` | `/jobs`, `/jobs/`, `/jobs/{group}` | conditional | Public by default; require admin bearer token when `security.expose_jobs_publicly=false`. |
+| `GET` | `/running`, `/running/`, `/running/{group}` | conditional | Public by default; require admin bearer token when `security.expose_running_publicly=false`. |
+| `POST` | `/execute/{group}/{job}` | admin gate | Fire a job now. Optional query params for shell jobs are matched against `allowedEnvs`. Returns the running-jobs snapshot. |
+| `POST` | `/stop/{group}/{job}` | admin gate | Best-effort abort. Returns `{"stopped": bool, "running": [...]}`. |
+| `POST` | `/reload/{group}` | admin gate | Re-scan `dsl_path` and re-register jobs. Returns `{"reloaded": N}`. Throttled per group via `security.reload_min_interval_secs`. |
+
+### Every response carries
+
+- **Five defense-in-depth security headers** — `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`, `Strict-Transport-Security: max-age=63072000; includeSubDomains; preload`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`. Emitted regardless of route so a proxy-bypassing dev bind still ships defense-in-depth.
+- **W3C Trace Context headers** — `traceparent: 00-<trace_id>-<span_id>-01` and `x-trace-id: <trace_id>`. Inbound `traceparent` is inherited when well-formed; otherwise a fresh 32-hex uuid is generated.
+
+### Every completed request logs one line
+
+`INFO http_request_completed method=X route=Y status=Z duration_us=... trace_id=...` — matched route pattern only (never raw URI), never headers, never bodies. See the "Access logging" section below.
 
 See [Failure modes](./failure-modes.md) for the status codes each
 endpoint can return.
@@ -238,5 +342,37 @@ field):
 | Env var | Purpose |
 |---|---|
 | `CRONMANAGER_CONFIG` | Absolute path to `cronmanager.yaml`. Overrides the search order. |
+| `CRONMANAGER_ADMIN_TOKEN` (or whatever `admin.bearer_token_env` names) | Admin bearer token gating `/execute` + `/stop` + `/reload`. Empty/unset → gate short-circuits (only safe on loopback). |
 | `CRONMANAGER_DB_PASSWORD` (or whatever `database.password_env` names) | The DB password. Absence fails startup when `database.url` is set. |
+| Any env var named in `security.per_group_token_envs` | Optional per-group tokens (see above). Missing envs WARN at boot; groups fall back to master-only. |
+| `APP_ENV` / `ENVIRONMENT` / `DEPLOY_ENV` | Deployment classifier — `production`, `staging`, `test`, `dev` (default). Non-`dev` values REFUSE to boot on weak credentials or unsafe posture flags. Unknown values fail-safe to `Production`. |
 | `RUST_LOG` | `tracing_subscriber` filter — e.g. `info`, `cronmanager=debug`, `info,cronmanager=trace`. |
+
+## Access logging
+
+Every completed HTTP request emits one INFO line (SOC 2 CC7.2 /
+ISO 27001 A.12.4 access-log compliance):
+
+```
+INFO http_request_completed method=POST route=/execute/:group/:job
+     status=200 duration_us=1234 trace_id=<32-hex>
+```
+
+- **Route pattern only** — never raw URI, so query strings and
+  path traversal attempts stay out of logs.
+- **Never logs headers or bodies** — no `Authorization`, no body
+  content, no client-controlled data.
+- **trace_id** is inherited from the inbound `traceparent` header
+  when present, else generated. Used to correlate with Ruuter and
+  downstream services in the Buerostack topology.
+
+Auth failures on `/execute`, `/stop`, `/reload` additionally emit
+a WARN with a PII-safe SHA-256 short-hash of the client IP and the
+matched route pattern — enough to build a blocklist from log data
+without exposing raw IPs.
+
+## Log stream is plain-text under Docker / systemd
+
+`tracing_subscriber::fmt()` only emits ANSI colour codes when
+stderr is a TTY. Container / systemd logs are ANSI-free — SIEM
+parsers (Splunk, Datadog, Loki) see clean bytes.

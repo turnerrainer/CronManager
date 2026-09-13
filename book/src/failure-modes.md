@@ -9,12 +9,17 @@ Every response CronManager emits carries a JSON body of the shape
 |---|---|---|
 | `200` | *(no error field)* | Success. Body carries the resource (list, snapshot, etc.). |
 | `400` | `bad_request` | Malformed JSON body. |
-| `400` | `invalid_job_definition` | A `.yaml` under `dsl_path` referenced an unknown `type`, unknown HTTP `method`, missing `url`/`command`, or `trigger: true`. |
+| `400` | `invalid_job_definition` | A `.yaml` under `dsl_path` referenced an unknown `type`, unknown HTTP `method`, missing `url`/`command`, `trigger: true`, empty `command`, etc. |
 | `400` | `invalid_cron` | A `trigger:` string that isn't parseable as a 6-field Quartz cron expression. |
 | `400` | `invalid_config` | `cronmanager.yaml` contained a top-level JVM Spring wrapper (`application:`, `spring:`, …) or an unknown field. |
+| `401` | `unauthorized` | Missing / wrong `Authorization: Bearer <token>` on an admin-gated endpoint (`/execute`, `/stop`, `/reload`; also `/jobs*` / `/running*` when `security.expose_*_publicly=false`). |
+| `403` | `forbidden` | Dangerous env-var override on `/execute?…` (see `security.allow_dangerous_env_overrides`); or an HTTP job whose target failed the SSRF pre-flight. |
 | `404` | `job_not_found` | `/execute/{group}/{job}` or `/stop/{group}/{job}` referenced a job that isn't scheduled. |
+| `408` | *(no body — tower_http)* | Whole request exceeded `limits.request_timeout_secs` (slow-drip body upload, slow handler). Only emitted when the timeout is > 0. |
 | `409` | `job_already_running` | `/execute` fired on a job whose previous invocation is still running. |
 | `413` | `request_too_large` | Inbound body exceeded `limits.max_request_bytes`. |
+| `413` | `too_many_query_params` | `/execute?…` exceeded `security.max_query_params` (default 64). Body carries `count` + `limit`. |
+| `429` | `too_many_requests` | `/reload/{group}` fired within `security.reload_min_interval_secs` of the previous reload of the same group. Body carries `retry_after_secs`. |
 | `500` | `internal_error` | Unexpected failure — check server logs. |
 | `500` | `shell_failed` | Shell job exited non-zero. |
 | `500` | `shell_timeout` | Shell job exceeded `limits.shell_timeout_secs` wall clock. |
@@ -25,9 +30,11 @@ Every response CronManager emits carries a JSON body of the shape
 | `502` | `upstream_body_too_large` | HTTP job's target response exceeded `limits.max_response_bytes`. |
 | `504` | `upstream_timeout` | HTTP job's target did not respond within `limits.request_timeout_secs`. |
 
-For `413` and `502 upstream_body_too_large` the JSON body also
-carries a `"limit": <bytes>` field so clients can render the
-actual cap in their error UI.
+For `413 request_too_large` and `502 upstream_body_too_large` the
+JSON body also carries a `"limit": <bytes>` field so clients can
+render the actual cap in their error UI. `413 too_many_query_params`
+carries both `"count"` and `"limit"`. `429 too_many_requests`
+carries `"retry_after_secs"`.
 
 ## Job execution outcomes
 
@@ -71,6 +78,30 @@ persistence is enabled:
   is treated as an *exact origin* by the CORS layer, not a
   wildcard. List every origin explicitly. A boot WARN fires when
   `"*"` is present so this isn't a silent surprise.
+- **One job stopped firing after a config change**: a per-file
+  DSL load error skips only that file (h2ck.me FN2 fix). Grep the
+  boot log for `dsl: skipping file due to load error` — the
+  ERROR line names the source path and reason. Sibling good files
+  continue to load; boot succeeds with a summary WARN like
+  `dsl: N/M file(s) failed to load`.
+- **All jobs stopped after `/reload`**: if `dsl: no jobs loaded —
+  every DSL file under X failed to parse` appears, the whole tree
+  is broken — the scheduler now has 0 jobs registered but the
+  process is still up. Fix the DSL and re-reload.
+- **`401 unauthorized` on `POST /execute`**: token is missing,
+  malformed, or wrong. The server-side WARN carries a PII-safe
+  client-IP hash and the matched route so you can pattern-match
+  in logs; the client sees only the generic JSON body.
+- **Process refuses to start with `REFUSING TO START in
+  Production`**: env-safety gate (`APP_ENV` non-`dev`) found weak
+  credentials or unsafe posture. The diagnostic lists every
+  failing item with a redacted value; rotate the env var(s) or
+  set `APP_ENV=dev` for local development.
+- **`408 Request Timeout` on a large upload**: the whole-request
+  wall-clock deadline (`limits.request_timeout_secs`, default
+  30 s) fired mid-body-read. Slow-drip and slow-loris style
+  requests are bounded here. Raise the value or set it to `0` to
+  disable (WARN emitted at boot).
 
 ## Timezone
 
