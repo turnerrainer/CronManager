@@ -323,6 +323,12 @@ pub fn build(state: AppState) -> Router {
         .layer(axum::middleware::from_fn(
             crate::security_headers::security_headers_middleware,
         ))
+        // FLEET-STRONGHOLDS §1.6 — W3C `traceparent` +
+        // `x-trace-id` response headers on every response so
+        // downstream services can correlate.
+        .layer(axum::middleware::from_fn(
+            crate::traceparent::traceparent_middleware,
+        ))
         // Audit LOG-v1 FN-LOG-3: emit one INFO line per completed
         // request for SOC2/ISO27001 access-log compliance. See
         // src/access_log.rs.

@@ -52,6 +52,55 @@ fn manual_http_job(name: &str) -> JobSpec {
     }
 }
 
+// FLEET-STRONGHOLDS §1.6 — every response must carry the W3C
+// traceparent + x-trace-id headers.
+#[tokio::test]
+async fn every_response_carries_traceparent_headers() {
+    let (base, _sched) = spawn_app().await;
+    let resp = reqwest::get(format!("{base}/health")).await.unwrap();
+    let tp = resp
+        .headers()
+        .get("traceparent")
+        .expect("traceparent header missing")
+        .to_str()
+        .unwrap()
+        .to_string();
+    let trace_id = resp
+        .headers()
+        .get("x-trace-id")
+        .expect("x-trace-id header missing")
+        .to_str()
+        .unwrap()
+        .to_string();
+    // "00-<trace>-<span>-01" — 4 dash-separated segments.
+    let parts: Vec<&str> = tp.split('-').collect();
+    assert_eq!(parts.len(), 4, "malformed traceparent: {tp}");
+    assert_eq!(parts[0], "00");
+    assert_eq!(parts[1].len(), 32);
+    assert_eq!(parts[2].len(), 16);
+    // x-trace-id must equal the trace-id segment of traceparent.
+    assert_eq!(trace_id, parts[1]);
+}
+
+#[tokio::test]
+async fn traceparent_inherits_inbound_trace_id() {
+    let (base, _sched) = spawn_app().await;
+    let inbound = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+    let resp = reqwest::Client::new()
+        .get(format!("{base}/health"))
+        .header("traceparent", inbound)
+        .send()
+        .await
+        .unwrap();
+    let x_trace = resp.headers().get("x-trace-id").unwrap().to_str().unwrap();
+    assert_eq!(x_trace, "0af7651916cd43dd8448eb211c80319c");
+    let tp = resp.headers().get("traceparent").unwrap().to_str().unwrap();
+    // The trace-id segment must be preserved; the span-id may
+    // differ (we regenerate per request).
+    let parts: Vec<&str> = tp.split('-').collect();
+    assert_eq!(parts[1], "0af7651916cd43dd8448eb211c80319c");
+}
+
 #[tokio::test]
 async fn health_endpoint_returns_ok() {
     let (base, _sched) = spawn_app().await;

@@ -13,3 +13,4 @@ pub mod router;
 pub mod scheduler;
 pub mod security;
 pub mod security_headers;
+pub mod traceparent;
