@@ -88,6 +88,46 @@ async fn actuator_health_alias_returns_ok_unauthenticated() {
     assert_eq!(body["status"], "ok");
 }
 
+// FLEET-STRONGHOLDS §5.1 — the five defense-in-depth security headers
+// must be present on every response, regardless of route. Verifies
+// the middleware wiring in src/router.rs::build.
+#[tokio::test]
+async fn every_response_carries_security_headers() {
+    let (base, _sched) = spawn_app().await;
+    for path in ["/health", "/", "/jobs", "/actuator/info"] {
+        let resp = reqwest::get(format!("{base}{path}")).await.unwrap();
+        for header in [
+            "content-security-policy",
+            "strict-transport-security",
+            "x-frame-options",
+            "x-content-type-options",
+            "referrer-policy",
+        ] {
+            assert!(
+                resp.headers().get(header).is_some(),
+                "{path} response missing {header}",
+            );
+        }
+        // Spot-check the canonical values so a regression that
+        // silently blanks the header is caught.
+        assert_eq!(
+            resp.headers().get("x-frame-options").unwrap(),
+            "DENY",
+            "x-frame-options for {path}",
+        );
+        assert_eq!(
+            resp.headers().get("x-content-type-options").unwrap(),
+            "nosniff",
+            "x-content-type-options for {path}",
+        );
+        assert_eq!(
+            resp.headers().get("referrer-policy").unwrap(),
+            "no-referrer",
+            "referrer-policy for {path}",
+        );
+    }
+}
+
 #[tokio::test]
 async fn index_returns_jvm_sentinel_string() {
     let (base, _sched) = spawn_app().await;

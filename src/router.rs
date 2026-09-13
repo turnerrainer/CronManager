@@ -313,7 +313,13 @@ pub fn build(state: AppState) -> Router {
         // limit is 2 MiB; disable it and apply ours so the
         // operator's config wins.
         .layer(DefaultBodyLimit::disable())
-        .layer(RequestBodyLimitLayer::new(body_limit));
+        .layer(RequestBodyLimitLayer::new(body_limit))
+        // FLEET-STRONGHOLDS §5.1 — defense-in-depth browser
+        // headers on every response. See src/security_headers.rs
+        // for the values + rationale.
+        .layer(axum::middleware::from_fn(
+            crate::security_headers::security_headers_middleware,
+        ));
     if let Some(cors) = cors {
         router = router.layer(cors);
     }
