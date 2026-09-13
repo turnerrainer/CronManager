@@ -26,7 +26,7 @@ use crate::dsl::{loader, JobKey};
 use crate::error::CronManagerError;
 use crate::executor::DispatchExtras;
 use crate::scheduler::Scheduler;
-use axum::extract::{DefaultBodyLimit, FromRequestParts, Path, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, FromRequestParts, MatchedPath, Path, State};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{from_fn_with_state, Next};
@@ -35,6 +35,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::time::Instant;
@@ -232,6 +233,11 @@ where
 /// a non-loopback bind by accident.
 pub async fn admin_gate(
     State(state): State<AppState>,
+    // ConnectInfo is populated by `into_make_service_with_connect_info`
+    // in main.rs. Tests that use `axum::serve(listener, app)` without
+    // that wrapping pass `None` — the auth-failure log line then omits
+    // the client hash but still records the reject.
+    client: Option<ConnectInfo<SocketAddr>>,
     headers: HeaderMap,
     req: axum::http::Request<axum::body::Body>,
     next: Next,
@@ -239,11 +245,35 @@ pub async fn admin_gate(
     let Some(expected) = state.admin_token.as_deref() else {
         return Ok(next.run(req).await);
     };
-    let presented = headers
+    // Resolve the client-IP hash + matched route once so both
+    // failure branches emit the same structured shape (h2ck.me
+    // LOG-FINDINGS FN-LOG-2 — bare `WARN missing token` gives no
+    // way to distinguish burst-traffic sources or derive a
+    // blocklist from logs).
+    let ip_hash = client
+        .as_ref()
+        .map(|c| crate::security::short_client_hash(c.0.ip().to_string().as_bytes()));
+    let route = req
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|m| m.as_str().to_string());
+    let reject = |reason: &'static str| -> CronManagerError {
+        tracing::warn!(
+            client_ip_hash = ip_hash.as_deref().unwrap_or("<absent>"),
+            route = route.as_deref().unwrap_or("<unmatched>"),
+            reason = reason,
+            "auth: rejected admin request",
+        );
+        CronManagerError::Unauthorized
+    };
+    let presented = match headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(bearer_token_bytes)
-        .ok_or(CronManagerError::Unauthorized)?;
+    {
+        Some(bytes) => bytes,
+        None => return Err(reject("missing or malformed Authorization header")),
+    };
     let expected_bytes = expected.as_bytes();
     // Length check is fine to short-circuit — `ct_eq` returns
     // `false` unconditionally if lengths differ, but we'd still
@@ -252,7 +282,7 @@ pub async fn admin_gate(
     if presented.len() != expected_bytes.len()
         || !bool::from(presented.as_slice().ct_eq(expected_bytes))
     {
-        return Err(CronManagerError::Unauthorized);
+        return Err(reject("token does not match expected"));
     }
     Ok(next.run(req).await)
 }

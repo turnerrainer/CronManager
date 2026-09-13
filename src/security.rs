@@ -237,6 +237,31 @@ fn char_boundary_ceil(s: &str, mut idx: usize) -> usize {
     idx
 }
 
+/// PII-safe short-hash of a client identifier (typically the
+/// stringified `SocketAddr` / IP) for structured log lines on
+/// auth-failure and access-log paths.
+///
+/// Returns the first 8 hex chars of a SHA-256 digest — 4 bytes,
+/// enough entropy to distinguish burst-traffic sources for
+/// blocklist derivation, non-reversible so an operator can share
+/// log excerpts without exposing raw client IPs (GDPR-safer than
+/// echoing the address). See h2ck.me LOG-FINDINGS FN-LOG-2 and
+/// FLEET-STRONGHOLDS §1.2.
+pub fn short_client_hash(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(bytes);
+    // 4 bytes → 8 hex chars. Never render the full digest — an
+    // attacker who guesses the input space (e.g. "all IPs in
+    // 10.0.0.0/24") could reverse it, but 4 bytes leaves enough
+    // work-factor to be forensically useful without inviting a
+    // rainbow-table lookup for common IPs.
+    let mut out = String::with_capacity(8);
+    for byte in &digest[..4] {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,5 +468,31 @@ mod tests {
         let s = "hello\tworld äöü 🚀";
         let out = sanitize_for_persistence(s);
         assert_eq!(out, s);
+    }
+
+    #[test]
+    fn short_client_hash_is_deterministic_and_8_chars() {
+        let a = short_client_hash(b"1.2.3.4");
+        assert_eq!(a.len(), 8);
+        assert_eq!(a, short_client_hash(b"1.2.3.4"));
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn short_client_hash_distinguishes_different_inputs() {
+        // Two adjacent /24 addresses must produce different
+        // digests so an operator can tell them apart in the log.
+        assert_ne!(
+            short_client_hash(b"10.0.0.1"),
+            short_client_hash(b"10.0.0.2")
+        );
+        assert_ne!(short_client_hash(b"::1"), short_client_hash(b"127.0.0.1"));
+    }
+
+    #[test]
+    fn short_client_hash_matches_expected_sha256_prefix() {
+        // Pin the algorithm: known-answer test for SHA-256 of "abc"
+        // (RFC 6234 vector) — first 4 bytes are ba7816bf.
+        assert_eq!(short_client_hash(b"abc"), "ba7816bf");
     }
 }
