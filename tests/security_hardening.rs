@@ -360,3 +360,53 @@ fn refuse_to_start_nonloopback_with_token_ok() {
     };
     assert!(router::refuse_to_start_without_token(&cfg, "0.0.0.0:8080", true).is_ok());
 }
+
+// ---------- PR-review v1 nit #4 — trust_network + token precedence ----------
+//
+// admin.trust_network=true opts out of the refuse-to-start check on
+// non-loopback binds. It MUST NOT ALSO silently disable the admin_gate
+// token check when a token IS set — otherwise operators who flip
+// trust_network for a mesh-authenticated deployment and STILL set a
+// token would unknowingly lose the belt-and-braces defense.
+
+#[tokio::test]
+async fn trust_network_true_with_token_set_still_enforces_gate() {
+    // Config: trust_network=true, but a token IS configured.
+    // Expected: /execute without the header → 401.
+    let mut cfg = default_cfg();
+    cfg.admin.trust_network = true;
+    let base = spawn_gated_app(cfg).await; // spawn_gated_app installs TOKEN
+    let no = reqwest::Client::new()
+        .post(format!("{base}/execute/nosuch/nope"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        no.status().as_u16(),
+        401,
+        "trust_network=true must NOT bypass the token check when a token is set",
+    );
+
+    // With the correct token → passes gate (404 on unknown job).
+    let yes = reqwest::Client::new()
+        .post(format!("{base}/execute/nosuch/nope"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(yes.status().as_u16(), 404);
+}
+
+#[test]
+fn refuse_to_start_trust_network_true_still_needs_token_field_off() {
+    // Sanity: trust_network=true skips refuse-to-start even without a token.
+    // Documented posture; test pins that the escape-hatch is deliberate.
+    let mut cfg = AppConfig::default();
+    cfg.admin.trust_network = true;
+    assert!(router::refuse_to_start_without_token(&cfg, "0.0.0.0:8080", false).is_ok());
+    // But refuse-to-start doesn't gate a token that IS present, either:
+    // both loopback + non-loopback with token set are OK regardless of
+    // trust_network.
+    assert!(router::refuse_to_start_without_token(&cfg, "0.0.0.0:8080", true).is_ok());
+    assert!(router::refuse_to_start_without_token(&cfg, "127.0.0.1:8080", true).is_ok());
+}
