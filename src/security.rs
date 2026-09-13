@@ -161,27 +161,59 @@ pub fn sanitize_for_log(s: &str) -> String {
     out
 }
 
+/// Sanitize a byte string for **persistence** in the DB history
+/// row (or any other durable store a downstream reader will render
+/// verbatim). Same escape rules as [`sanitize_for_log`] but WITHOUT
+/// the 4 KiB cap — the caller pairs this with
+/// [`truncate_response_body`] to bound total row size.
+///
+/// Motivation (h2ck.me PR-review v1 nit #3): a shell job that
+/// captured attacker-controlled stdout previously wrote raw CR/LF
+/// and ANSI ESC bytes into `response_body`. A downstream log viewer
+/// (or `SELECT response_body …` followed by `cat`) rendering that
+/// row would then be vulnerable to the exact injection
+/// [`sanitize_for_log`] was designed to prevent on the log stream.
+pub fn sanitize_for_persistence(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\r' => out.push_str("\\r"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push('\t'),
+            c if (c as u32) < 0x20 || c == '\u{7f}' => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// Cap the bytes of an HTTP response body / shell stdout stored in
-/// the history row. Above the cap we keep the first `max/2` bytes
-/// and the last `max/2` bytes with a marker in between — enough
-/// context for triage without unbounded row growth on chatty
-/// upstreams.
+/// the history row AND sanitize control bytes for downstream
+/// renderers. Above the cap we keep the first `max/2` bytes and the
+/// last `max/2` bytes with a marker in between — enough context for
+/// triage without unbounded row growth on chatty upstreams.
 ///
 /// UTF-8 boundaries are respected on both cut points so the marker
 /// splices in cleanly.
+///
+/// Control-byte sanitisation happens BEFORE size capping so a body
+/// that arrives 90% ANSI-ESC still fits usefully inside the cap.
 pub fn truncate_response_body(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        return s.to_string();
+    let clean = sanitize_for_persistence(s);
+    if clean.len() <= max {
+        return clean;
     }
     let half = max / 2;
-    let head_end = char_boundary_floor(s, half);
-    let tail_start = char_boundary_ceil(s, s.len().saturating_sub(half));
-    let truncated = s.len() - (head_end + (s.len() - tail_start));
+    let head_end = char_boundary_floor(&clean, half);
+    let tail_start = char_boundary_ceil(&clean, clean.len().saturating_sub(half));
+    let truncated = clean.len() - (head_end + (clean.len() - tail_start));
     format!(
         "{}\n… [{} bytes truncated] …\n{}",
-        &s[..head_end],
+        &clean[..head_end],
         truncated,
-        &s[tail_start..]
+        &clean[tail_start..]
     )
 }
 
@@ -370,5 +402,46 @@ mod tests {
         // If we can round-trip via as_bytes → from_utf8 the string
         // is valid.
         std::str::from_utf8(out.as_bytes()).unwrap();
+    }
+
+    // PR-review v1 nit #3 — the DB history recorder used to persist
+    // raw CR/LF/ANSI bytes. A downstream reader rendering the row
+    // was then vulnerable to the same class of injection the log
+    // sanitizer defends against. Confirm truncate_response_body
+    // now runs the persistence sanitiser first.
+    #[test]
+    fn truncate_response_body_escapes_crlf_before_persist() {
+        let hostile = "line1\r\n{\"level\":\"ERROR\",\"msg\":\"forged\"}\r\n";
+        let out = truncate_response_body(hostile, 1024);
+        assert!(!out.contains('\r'));
+        assert!(!out.contains('\n'));
+        assert!(out.contains("\\r\\n"));
+    }
+
+    #[test]
+    fn truncate_response_body_escapes_ansi_before_persist() {
+        let hostile = "\x1b[2Jbenign_text";
+        let out = truncate_response_body(hostile, 1024);
+        assert!(!out.contains('\x1b'));
+        assert!(out.contains("\\u001b"));
+        assert!(out.contains("benign_text"));
+    }
+
+    #[test]
+    fn truncate_response_body_escapes_null_and_del_before_persist() {
+        let hostile = "a\0b\x7fc";
+        let out = truncate_response_body(hostile, 1024);
+        assert!(!out.contains('\0'));
+        assert!(!out.contains('\x7f'));
+        assert!(out.contains("\\u0000"));
+        assert!(out.contains("\\u007f"));
+    }
+
+    #[test]
+    fn sanitize_for_persistence_leaves_utf8_and_tab_intact() {
+        // Multi-byte + tab are legit characters we must preserve.
+        let s = "hello\tworld äöü 🚀";
+        let out = sanitize_for_persistence(s);
+        assert_eq!(out, s);
     }
 }
