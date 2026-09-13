@@ -33,10 +33,12 @@ use axum::{Json, Router};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use std::time::Instant;
 use subtle::ConstantTimeEq;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
+use tower_http::timeout::TimeoutLayer;
 
 /// Per-group throttle for `POST /reload/…`. Legit ops workflows
 /// reload once per commit; the throttle kills the "flood /reload
@@ -228,6 +230,7 @@ fn bearer_token_bytes(header: &str) -> Option<Vec<u8>> {
 pub fn build(state: AppState) -> Router {
     let cors = build_cors(&state.cfg.allowed_origins);
     let body_limit = state.cfg.limits.max_request_bytes;
+    let request_timeout_secs = state.cfg.limits.request_timeout_secs;
 
     // Two-tier router: state-changing routes are behind the admin
     // gate; read-only routes stay open. Both trees share the same
@@ -262,6 +265,17 @@ pub fn build(state: AppState) -> Router {
         // operator's config wins.
         .layer(DefaultBodyLimit::disable())
         .layer(RequestBodyLimitLayer::new(body_limit));
+    // Whole-request wall-clock deadline (h2ck.me RUNTIME-FINDINGS
+    // v1 FN5). The upstream/executor timeouts only cover the
+    // dispatch phase; a slow-drip body upload could hold a Tokio
+    // task past `limits.request_timeout_secs` because the body-read
+    // wasn't bounded. TimeoutLayer wraps the ENTIRE request/response
+    // (headers + body-read + handler + response-write). Setting
+    // `limits.request_timeout_secs=0` disables the layer to preserve
+    // the documented escape hatch (WARN emitted at boot).
+    if request_timeout_secs > 0 {
+        router = router.layer(TimeoutLayer::new(Duration::from_secs(request_timeout_secs)));
+    }
     if let Some(cors) = cors {
         router = router.layer(cors);
     }
