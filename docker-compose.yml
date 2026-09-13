@@ -44,9 +44,16 @@ services:
       timescaledb:
         condition: service_healthy
     restart: unless-stopped
-    # Not read-only: shell jobs may write to /tmp. If your DSLs
-    # never launch shell jobs, override this compose file with
-    # `read_only: true` to tighten further.
+    # Read-only rootfs (h2ck.me RUNTIME-FINDINGS v1 FN9).
+    # The service never writes to /app at runtime — DSL / scripts /
+    # config are read-only inputs, migrations flow to Postgres, logs
+    # go to stdout. Shell jobs that need scratch space use /tmp
+    # (tmpfs below). Any shell job that needs to PERSIST state
+    # should point at a bind-mounted volume added under `volumes:`
+    # above. Without read_only:true, a shell job with code
+    # execution can persist files at /app, rewrite DSLs, and own
+    # future job runs (see h2ck.me BREAK-TESTS-v1 FN9).
+    read_only: true
     tmpfs:
       - /tmp:size=64M
     security_opt:
