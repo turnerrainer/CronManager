@@ -138,8 +138,12 @@ impl IntoResponse for CronManagerError {
     fn into_response(self) -> Response {
         // WARN for anything an operator would want to see in
         // logs; DEBUG for expected outcomes like "job not found".
+        // Unauthorized is DEBUG here because admin_gate already
+        // emitted the rich WARN line with client_ip_hash + route
+        // (h2ck.me LOG-FINDINGS FN-LOG-2). Double-logging would
+        // dilute the forensic value.
         match self {
-            Self::JobNotFound { .. } | Self::JobAlreadyRunning { .. } => {
+            Self::JobNotFound { .. } | Self::JobAlreadyRunning { .. } | Self::Unauthorized => {
                 tracing::debug!("request failed: {}", self);
             }
             _ => tracing::warn!("request failed: {}", self),

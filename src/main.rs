@@ -95,7 +95,17 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("listening on {}", bind);
     let listener = tokio::net::TcpListener::bind(&bind).await?;
-    axum::serve(listener, app).await?;
+    // Wrap the service with `ConnectInfo<SocketAddr>` so the
+    // admin_gate middleware can hash the client IP into
+    // auth-failure log lines (h2ck.me FN-LOG-2). Tests use the
+    // simpler `axum::serve(listener, app)` shape and get `None`
+    // for the client field — the log line still emits, just
+    // without the hash.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 
