@@ -64,6 +64,30 @@ async fn health_endpoint_returns_ok() {
     assert_eq!(body["status"], "ok");
 }
 
+// h2ck.me RUNTIME-FINDINGS FN1 / PUBLIC-EXPOSURE F-CM-4:
+// k8s livenessProbe defaults to `/healthz`; without this alias the
+// probe hits the admin gate and receives 401, marking pods unhealthy
+// in perpetuity. All three health URLs must return 200 unauth.
+#[tokio::test]
+async fn healthz_alias_returns_ok_unauthenticated() {
+    let (base, _sched) = spawn_app().await;
+    let resp = reqwest::get(format!("{base}/healthz")).await.unwrap();
+    assert_eq!(resp.status(), 200, "/healthz must be public and 200");
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "ok");
+}
+
+#[tokio::test]
+async fn actuator_health_alias_returns_ok_unauthenticated() {
+    let (base, _sched) = spawn_app().await;
+    let resp = reqwest::get(format!("{base}/actuator/health"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "ok");
+}
+
 #[tokio::test]
 async fn index_returns_jvm_sentinel_string() {
     let (base, _sched) = spawn_app().await;

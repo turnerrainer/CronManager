@@ -4,6 +4,7 @@
 //!
 //! * `GET  /`
 //! * `GET  /health`         (native)
+//! * `GET  /healthz`        (K8s convention, aliased to `/health`)
 //! * `GET  /actuator/health` (JVM URL, aliased to `/health`)
 //! * `GET  /actuator/info`   (JVM URL, minimal build-info body)
 //! * `GET  /jobs`, `GET /jobs/` (trailing slash), `GET /jobs/{group}`
@@ -242,8 +243,12 @@ pub fn build(state: AppState) -> Router {
         .route("/", get(index))
         // /health is the native name; /actuator/health is the JVM
         // URL kept for operators grepping the old Actuator path.
-        // Both return the same minimal body.
+        // /healthz is the Kubernetes convention (default in most
+        // Helm charts' livenessProbe / readinessProbe) — aliased
+        // so a k8s deployment doesn't get 401 on the probe when the
+        // admin gate is active. All three return the same body.
         .route("/health", get(health))
+        .route("/healthz", get(health))
         .route("/actuator/health", get(health))
         .route("/actuator/info", get(info))
         .route("/jobs", get(jobs_all))
