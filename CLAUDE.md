@@ -10,6 +10,15 @@ best-practice baseline.
 `CHANGELOG.md`). Branch of record for active work: `dev`. First
 stable target: `v1.0.0` on `main`.
 
+**Post-release state (unreleased on `dev`)**: 15 PRs landed after
+`0.1.4-alpha` closing h2ck.me v1 break-test findings, all four
+PR-review v2 backlog nits, F-CM-2 per-group tokens, FN7/FN8 DSL
+list form, and four FLEET-STRONGHOLDS adoptions (§1.6, §5.1,
+§11.1, §11.2). See the **"Breaking / non-obvious changes on `dev`
+since `0.1.4-alpha`"** section below for everything an LLM editing
+code / config / DSL must know. Version has NOT been bumped —
+next release cadence is at the maintainer's discretion.
+
 ## What the project is
 
 Rust reimplementation of the JVM
@@ -89,6 +98,144 @@ Older prose to be aware of: `#[serde(deny_unknown_fields)]` has
 been on every config and DSL struct since `0.1.0-alpha.2`. A typo
 like `dslpath:` (missing underscore) or `retryCoun: 3` is a hard
 load error, not a silent no-op.
+
+## Breaking / non-obvious changes on `dev` since `0.1.4-alpha`
+
+**None of these are required by upgraders** — every new field
+defaults to the pre-existing behaviour. But an LLM editing this
+tree must recognise them; some (11, 12) are load-bearing shape
+changes to the DSL and executor API.
+
+1. **`/healthz` alias for k8s** (h2ck.me FN1 / F-CM-4). Registered
+   alongside `/health` and `/actuator/health`, unauthenticated.
+   All three routes return the same body — livenessProbe defaults
+   in most Helm charts hit `/healthz`.
+
+2. **Loader is skip-and-warn per file** (h2ck.me FN2). A single
+   bad DSL file no longer aborts the whole boot / `/reload`; it
+   logs at ERROR (naming the source_path and reason) and the walk
+   continues. Sibling good files still register. If EVERY file
+   fails, boot succeeds with 0 jobs plus a distinguishable WARN
+   ("scheduler has 0 jobs registered"). Only `read_dir` failures
+   remain fatal.
+
+3. **Docker compose `read_only: true`** (h2ck.me FN9). Rootfs is
+   immutable in the shipped compose; `/tmp` is `tmpfs` (64 MiB)
+   for shell-job scratch. Any job needing persistent scratch must
+   point at a bind-mounted volume added by the operator.
+
+4. **Rich auth-failure WARN log** (h2ck.me FN-LOG-2). Every
+   admin-gate reject now emits:
+   ```
+   WARN auth: rejected admin request
+        client_ip_hash=a1b2c3d4 route=/execute/:group/:job
+        reason="token does not match expected"
+   ```
+   `client_ip_hash` is a 4-byte SHA-256 prefix (PII-safe). The
+   old generic WARN in `error::IntoResponse` is DEBUG for
+   Unauthorized so the same reject doesn't double-log.
+
+5. **`security.expose_jobs_publicly` + `security.expose_running_publicly`**
+   (h2ck.me FN3 / F-CM-1). Both default `true` (backward-compat).
+   Set either to `false` to require the admin bearer on the
+   corresponding recon endpoint. `/health`, `/healthz`,
+   `/actuator/health`, `/actuator/info`, `/` always stay public.
+   Boot WARN if either is left `true` AND a token is configured.
+
+6. **Slow-body deadline via `TimeoutLayer`** (h2ck.me FN5). The
+   whole request/response (headers + body-read + handler +
+   response-write) is bounded by `limits.request_timeout_secs`.
+   Setting the value to 0 disables the layer (documented WARN).
+
+7. **`ReloadGate` memory bounded** (h2ck.me PR-review nit #1).
+   The last-fired-per-group map opportunistically evicts entries
+   older than `10 × min_interval_secs` and hard-caps at 1024
+   distinct groups (oldest evicted). Zero behaviour change for
+   deployments with < 1024 groups.
+
+8. **History `response_body` sanitised BEFORE persist** (h2ck.me
+   PR-review nit #3). `security::truncate_response_body` now runs
+   `sanitize_for_persistence` first so downstream DB-row viewers
+   don't see raw CR/LF/ANSI. Escape rules match `sanitize_for_log`
+   but without the 4 KiB cap — the persist path uses
+   `stored_response_body_max_bytes` (64 KiB) as its size bound.
+
+9. **Access-log middleware** (h2ck.me FN-LOG-3). Every completed
+   request emits one INFO line:
+   `http_request_completed method= route= status= duration_us= trace_id=`.
+   Never logs headers / bodies / raw URIs — matched route pattern
+   only.
+
+10. **W3C Trace Context response headers** (FLEET §1.6). Every
+    response now carries `traceparent: 00-<trace_id>-<span_id>-01`
+    and `x-trace-id: <trace_id>`. Inbound `traceparent` is
+    inherited when well-formed; otherwise a fresh 32-hex uuid is
+    generated.
+
+11. **⚠️ DSL `command:` field accepts EITHER string OR list**
+    (h2ck.me FN7 + FN8). The string form is whitespace-tokenised
+    exactly as before (JVM parity). The **list form**
+    (`command: ['/bin/sh', '-c', 'sleep 30; echo done']`) is
+    passed through verbatim as argv. Both normalise to an argv
+    `Vec<String>` at load time — **`JobKind::Exec` now holds
+    `argv: Vec<String>`, NOT `command: String`.** Any tool or
+    test that constructs a `JobSpec` directly must use the new
+    shape. `JobKind::exec_command_display()` returns the argv
+    space-joined for logs.
+
+12. **`security.per_group_token_envs: BTreeMap<String, String>`**
+    (h2ck.me F-CM-2). Optional map from group name to env-var
+    name. When populated, a request to a group-scoped admin
+    endpoint (`/execute/:g/:j`, `/stop/:g/:j`, `/reload/:g`) is
+    accepted with EITHER the master admin token OR the group-
+    specific token. Groups not in the map only accept the
+    master. Values are env-var names, not raw tokens.
+
+13. **Default security response headers on every response**
+    (FLEET §5.1). CSP `default-src 'none'; frame-ancestors 'none'`,
+    HSTS 2y+includeSubDomains+preload, X-Frame-Options DENY,
+    X-Content-Type-Options nosniff, Referrer-Policy no-referrer.
+    Handler-set values are preserved (`entry().or_insert()`).
+
+14. **Log stream is plain-text under Docker / systemd**
+    (h2ck.me FN-LOG-1). `tracing_subscriber::fmt()` only emits
+    ANSI when stderr is a TTY. SIEM parsers see clean bytes.
+
+15. **Env-aware boot safety gates** (FLEET §11.1 + §11.2). New
+    module `src/env_safety.rs`:
+    - Reads `APP_ENV` / `ENVIRONMENT` / `DEPLOY_ENV` (first match
+      wins). Unknown values fail-safe to `Production`.
+    - In non-`dev`, REFUSES to boot when weak / default
+      credentials are detected (admin token, DB password) or when
+      documented-unsafe posture flags are set
+      (`admin.trust_network`, `security.block_private_networks=false`,
+      `security.allow_dangerous_env_overrides=true`).
+    - In `dev`, same conditions produce WARN and boot continues.
+    - Weak-pattern list covers substrings seen in real audits:
+      `changeit`, `password`, `01234`, `dev-`, `-test`, `example`,
+      `test-admin-token`, plus min-length checks (32 for tokens,
+      12 for passwords).
+
+**Boot log signals introduced by the above.** Diagnostics table
+below adds these substrings on top of the `0.1.4-alpha` set:
+
+| WARN substring | Cause / meaning |
+|---|---|
+| `weak credential (dev env, permitted)` | Env-safety gate found a weak default; boot continues because `APP_ENV=dev` (or unset). |
+| `unsafe posture (dev env, permitted)` | Env-safety gate found `trust_network` / SSRF-off / dangerous-env-on in dev. |
+| `expose_jobs_publicly=true` | Recon endpoints `/jobs*` are open despite a token being configured — flip `security.expose_jobs_publicly: false`. |
+| `expose_running_publicly=true` | Same for `/running*`. |
+| `per_group_token_envs[X]=Y is unset or empty` | Env var named in `security.per_group_token_envs` isn't exported. Group X falls back to master-only. |
+| `dsl: N/M file(s) failed to load — see preceding ERROR lines` | Skip-and-warn triggered. Look up-log for the per-file `dsl: skipping file` ERROR lines. |
+| `dsl: no jobs loaded — every DSL file … failed to parse` | Distinct signal that the tree is fully broken even though boot succeeded. |
+| `MYSVC_OFFLINE=true` (n/a here) | Not implemented in CronManager; FLEET §9.1 reference. |
+
+**Hard boot failures introduced by env-safety:**
+
+| Error prefix | Cause | Fix |
+|---|---|---|
+| `REFUSING TO START in Production: N weak/default credential(s) detected` | Env-safety §11.1: admin token / DB password matched a weak pattern or is too short. | Rotate the affected env var(s) to a strong value; the error names each redacted (`01****ef`). Or set `APP_ENV=dev` to permit dev defaults locally. |
+| `REFUSING TO START in Production: N unsafe posture item(s)` | Env-safety §11.2: `admin.trust_network=true` / `block_private_networks=false` / `allow_dangerous_env_overrides=true` in a non-dev env. | Flip each named flag to its safe default. |
 
 ## Finding problematic configs
 
@@ -278,15 +425,37 @@ security:
   min_cron_interval_secs: 10
   stored_response_body_max_bytes: 65536
   reload_min_interval_secs: 60
+  # h2ck.me v2 hardening (post-0.1.4-alpha). Both public flags
+  # default true for backward compat; flip to false whenever the
+  # operator dashboard doesn't need anonymous read access.
+  expose_jobs_publicly: false
+  expose_running_publicly: false
+  # Optional per-group tokens (h2ck.me F-CM-2). Empty by default.
+  # per_group_token_envs:
+  #   payroll:   PAYROLL_ADMIN_TOKEN
+  #   logistics: LOGISTICS_ADMIN_TOKEN
 
 database:
   url: postgres://cronmanager@timescaledb:5432/cronmanager
   password_env: CRONMANAGER_DB_PASSWORD
 ```
 
-Every `security.*` value shown here is the current default; the
-block is written out explicitly so an operator reading the file
-sees the posture at a glance.
+Every `security.*` value shown here is the current default (except
+the two `expose_*_publicly` flags, which default `true` for
+backward compat — flipping them to `false` in the file makes the
+tightened posture visible). The block is written out explicitly so
+an operator reading the file sees the posture at a glance.
+
+**Environment marker.** For any deployment above `dev` set exactly
+one of these env vars so `env_safety` treats weak defaults and
+unsafe posture flags as fatal:
+
+```bash
+APP_ENV=production   # or ENVIRONMENT=production / DEPLOY_ENV=production
+```
+
+Unknown / missing values fail-safe to `Production` — a typo like
+`APP_ENV=prroduction` refuses weak creds too.
 
 ### Behind an authenticating reverse proxy or service mesh
 
@@ -358,7 +527,71 @@ docker run --rm -p 8080:8080 \
   `CHANGELOG.md` (and the local internal HANDOFF, if present).
   Miss one and the release audit will catch it, but so will an
   LLM re-reading the tree.
+- **Never bump the version, cut a tag, or create a GitHub Release
+  without explicit maintainer approval.** These are the ONLY
+  actions in this repo that require confirmation regardless of
+  the invocation mode. When a release IS approved, tag on `main`,
+  push the tag, and use `gh release create <tag> --title <tag>
+  --notes-file <notes>` so the "Releases" page mirrors the tag.
 - Work on `dev`. Merge to `main` only when tagging a release.
 - New security controls belong in `src/security.rs` — keep the
   primitives generic so a future extraction into a shared
   `buerostack-security` workspace crate stays cheap.
+
+### Writing / editing a DSL `command:` field (h2ck.me FN7 + FN8)
+
+Two accepted shapes. Pick the RIGHT one for what the job actually
+needs — the tokenisation rules are different and NOT interchange-
+able.
+
+**String form (JVM parity).** Whitespace-split, no shell
+interpretation, no quoting. Use when the program takes only
+simple positional arguments.
+
+```yaml
+command: /bin/echo hello world
+command: ./scripts/samples/backup.sh /var/lib/data
+```
+
+`"/bin/sh -c \"sleep 30\""` in string form does NOT work — the
+double quotes are literal characters, not shell metacharacters.
+Attempting this fails with `Syntax error: Unterminated quoted
+string` at the child exec. If you need shell semantics, use the
+LIST form.
+
+**List form (explicit argv).** Passed through verbatim; each list
+element becomes one argv entry.
+
+```yaml
+command: ['/bin/sh', '-c', 'sleep 30; echo done']
+command:
+  - /usr/bin/python3
+  - -c
+  - "import time; time.sleep(30); print('done')"
+```
+
+Either form normalises to `Vec<String>` at load time. Empty strings
+and empty lists are refused at load with `command field is empty`.
+
+### Writing a Rust test that constructs `JobKind::Exec` directly
+
+The field is `argv: Vec<String>`, NOT `command: String`. If you're
+editing a fixture that predates the FN7/FN8 refactor, update the
+shape:
+
+```rust
+// After (correct):
+kind: JobKind::Exec {
+    argv: vec!["/bin/sleep".into(), "3".into()],
+    allowed_envs: vec![],
+},
+
+// Before (broken — will not compile):
+kind: JobKind::Exec {
+    command: "/bin/sleep 3".into(),
+    allowed_envs: vec![],
+},
+```
+
+`JobKind::exec_command_display()` returns the space-joined form
+for logs when you need the human-readable version.
