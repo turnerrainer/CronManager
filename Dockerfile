@@ -14,7 +14,17 @@ RUN cargo build --release --locked
 FROM debian:13.6-slim
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# `apt-get upgrade` picks up Debian's security-channel patches
+# on top of the base image tag. Trivy on v0.2.0-alpha's runtime
+# layer flagged 12 upstream-fixed CVEs (9 HIGH + 3 CRITICAL) in
+# gzip / libpcre2 / libsqlite3 / perl-base because the pinned
+# base tag froze at release time and CVEs have accumulated in
+# the interim. Running `apt-get upgrade` at build time means
+# every publish pulls the latest fixes without moving off the
+# base tag — release drift stays visible via the pin, but the
+# security surface tracks the security channel.
+RUN apt-get update && apt-get -y upgrade && \
+    apt-get install -y --no-install-recommends \
     libssl3 ca-certificates curl tini bash \
     && rm -rf /var/lib/apt/lists/*
 

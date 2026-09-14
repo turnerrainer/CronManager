@@ -8,6 +8,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1-alpha] - 2026-09-14
+
+Security-patch republish of `0.2.0-alpha`. Application code is
+byte-identical to `0.2.0-alpha`; the only source change is the
+Dockerfile runtime layer, which now runs `apt-get -y upgrade`
+before installing runtime dependencies. This absorbs Debian
+security-channel patches on top of the pinned `debian:13.6-slim`
+base.
+
+### Why
+
+Trivy on the `0.2.0-alpha` publish flagged 12 upstream-fixed
+CVEs (9 HIGH + 3 CRITICAL) in the runtime layer — `gzip`,
+`libpcre2-8-0`, `libsqlite3-0`, and `perl-base`. The pinned
+base image tag froze at v0.1.4-alpha release time, so any CVE
+patched in Debian's security channel since then wasn't reaching
+the built image. The Trivy failure blocked cosign signing —
+`v0.2.0-alpha` images landed on both registries but are UNSIGNED
+and carry the 12 CVEs.
+
+### Yank notice
+
+`v0.2.0-alpha` is **yanked**. The git tag stays in place as
+historical record; the GH Release carries a yanked notice
+pointing at `v0.2.1-alpha`. Registry artefacts for
+`v0.2.0-alpha` remain (immutable-tag discipline) but SHOULD NOT
+be pulled — they are unsigned AND carry the 12 known CVEs.
+
+### Changed
+
+- **`Dockerfile`** runtime layer now runs `apt-get update && apt-get
+  -y upgrade` before installing runtime deps. Every build picks
+  up the latest security-channel patches without moving off the
+  pinned base tag. No layer-caching regression — buildx
+  cache-from GHA still hits when only source (not the Dockerfile)
+  changes.
+- **`Cargo.toml`, `Cargo.lock`, `VERSION`, `docker-compose.yml`,
+  `README.md`, `book/src/introduction.md`** — version bumped
+  `0.2.0-alpha` → `0.2.1-alpha` (atomic per DEV-REQUIREMENTS §8).
+
+### No functional change
+
+223 tests pass (identical to `0.2.0-alpha`). `cargo fmt --check`
++ `cargo clippy --all-targets -- -D warnings` + `cargo audit`
++ `cargo deny check all` + `( cd book && mdbook build )` all
+clean. No Rust source touched — every symbol / API / config
+field / DSL shape from `0.2.0-alpha` carries forward unchanged.
+
 ## [0.2.0-alpha] - 2026-09-13
 
 h2ck.me v2 audit round + Buerostack fleet-strongholds adoption.

@@ -3,7 +3,7 @@
 YAML-driven cron scheduler for HTTP + shell jobs. Rust
 reimplementation of [buerokratt/CronManager](https://github.com/buerokratt/CronManager).
 
-**Version:** 0.2.0-alpha · **License:** Apache-2.0
+**Version:** 0.2.1-alpha · **License:** Apache-2.0
 · **Docs:** [turnerrainer.github.io/cronmanager](https://turnerrainer.github.io/cronmanager/)
 · **Images:** `docker.io/turnerrainer/cronmanager:alpha`, `ghcr.io/turnerrainer/cronmanager:alpha`
 
@@ -35,12 +35,21 @@ docker compose up -d --build
 
 ## Security posture
 
-`v0.2.0-alpha` closes the h2ck.me v2 audit round (break-test
-findings FN1–FN9, FN-LOG-1..4, F-CM-1/2/4) and adopts four
-Buerostack fleet-stronghold patterns (§1.6 W3C traceparent,
-§5.1 default security response headers, §11.1/11.2 environment-
-aware boot safety gates) on top of the v0.1.4-alpha baseline
-below.
+`v0.2.1-alpha` republishes `v0.2.0-alpha` with a Dockerfile
+`apt-get upgrade` on the runtime layer, absorbing 12 upstream-
+fixed Debian security-channel CVEs (9 HIGH + 3 CRITICAL in
+gzip / libpcre2 / libsqlite3 / perl-base) that Trivy flagged in
+the v0.2.0-alpha publish. **v0.2.0-alpha is yanked** — do not
+pull `docker.io/turnerrainer/cronmanager:0.2.0-alpha` or its
+`ghcr.io` mirror. Application code is identical between the two
+tags (same test suite, same 223 passing tests).
+
+The `0.2.0-alpha` line closed the h2ck.me v2 audit round
+(break-test findings FN1–FN9, FN-LOG-1..4, F-CM-1/2/4) and
+adopted four Buerostack fleet-stronghold patterns (§1.6 W3C
+traceparent, §5.1 default security response headers, §11.1/11.2
+environment-aware boot safety gates) on top of the v0.1.4-alpha
+baseline below.
 
 - `POST /execute`, `POST /stop`, `POST /reload` are gated behind
   `Authorization: Bearer <token>` when
@@ -81,7 +90,8 @@ config in [`CLAUDE.md` § Best-practice configs](./CLAUDE.md#best-practice-confi
 - **[`CLAUDE.md`](./CLAUDE.md)** — start here if you're an LLM
   assistant or a new developer landing cold. Covers breaking
   changes since `0.1.0-alpha.3` AND the additional shape /
-  posture changes introduced in `0.2.0-alpha`, how to spot a
+  posture changes introduced in `0.2.0-alpha` / `0.2.1-alpha`,
+  how to spot a
   broken config, how to fix common problems, and best-practice
   config baselines (loopback dev, public/internet, JVM-compat
   port).

@@ -6,16 +6,18 @@ is, which behaviours changed recently, how to spot a broken
 config, how to fix one, and which config shape is the current
 best-practice baseline.
 
-**Current release**: `0.2.0-alpha` (see `VERSION`, `Cargo.toml`,
+**Current release**: `0.2.1-alpha` (see `VERSION`, `Cargo.toml`,
 `CHANGELOG.md`). Branch of record for active work: `dev` — this is
 also the default branch on GitHub. There is no `main` branch yet;
 alphas are cut as git tags on `dev` (`v0.1.4-alpha` → `fe1f517`,
-`v0.2.0-alpha` → `7d72714`, both on dev's history) and published
-as GitHub Releases (`v0.1.4-alpha` marked Latest / stable,
-`v0.2.0-alpha` marked Pre-release). `main` will be created and
-tagged only when the project reaches prod-ready state, targeted
-at `v1.0.0`. **Never push a `main` branch or move code there
-without explicit maintainer approval.**
+`v0.2.0-alpha` → `7d72714` [**yanked** for CVE remediation],
+`v0.2.1-alpha` supersedes v0.2.0-alpha with a Dockerfile
+`apt-get upgrade` on the runtime layer) and published as GitHub
+Releases (`v0.1.4-alpha` marked Latest / stable, `v0.2.1-alpha`
+marked Pre-release). `main` will be created and tagged only when
+the project reaches prod-ready state, targeted at `v1.0.0`.
+**Never push a `main` branch or move code there without explicit
+maintainer approval.**
 
 ## What the project is
 
@@ -97,7 +99,13 @@ been on every config and DSL struct since `0.1.0-alpha.2`. A typo
 like `dslpath:` (missing underscore) or `retryCoun: 3` is a hard
 load error, not a silent no-op.
 
-## Breaking / non-obvious changes in `0.2.0-alpha` (since `0.1.4-alpha`)
+## Breaking / non-obvious changes in `0.2.x-alpha` (since `0.1.4-alpha`)
+
+*(All items below landed in `0.2.0-alpha`. `0.2.1-alpha` republishes
+the same application code on a Dockerfile that pulls Debian
+security patches at build time — no application-visible changes,
+`v0.2.0-alpha` is yanked in favour of `v0.2.1-alpha`.)*
+
 
 **None of these are required by upgraders** — every new field
 defaults to the pre-existing behaviour. But an LLM editing this
