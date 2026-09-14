@@ -653,6 +653,14 @@ async fn reload_jobs(
     // The `group` param mirrors JVM's URL shape; behavioural
     // parity: full-tree reload, group filter has no effect at
     // load-time. Task 005 will implement true diff-based reload.
+    // FLEET-STRONGHOLDS §11.3 — same dev-fixture gate as the boot
+    // load path. `Environment::from_env()` returns the cached
+    // value seeded at boot, so the runtime posture matches the
+    // one main.rs enforced on startup.
+    let dev_fixture_action = crate::env_safety::DevFixtureAction::from_env(
+        crate::env_safety::Environment::from_env(),
+        s.cfg.security.allow_dev_fixture_dsls,
+    );
     let jobs = loader::load_all_bounded(
         &s.cfg.dsl_path,
         s.cfg.security.max_dsl_file_bytes,
@@ -660,6 +668,7 @@ async fn reload_jobs(
         s.cfg.security.max_retry_count,
         s.cfg.security.min_cron_interval_secs,
         s.cfg.security.block_private_networks,
+        dev_fixture_action,
     )
     .await?;
     let count = s.scheduler.reload_from(jobs)?;

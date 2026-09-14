@@ -9,6 +9,7 @@
 use crate::dsl::{
     HeaderSource, HttpHeader, JobKey, JobKind, JobSpec, LoadedJob, RetryPolicy, TimeWindow, Trigger,
 };
+use crate::env_safety::DevFixtureAction;
 use crate::error::CronManagerError;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -25,6 +26,11 @@ pub struct LoadPolicy {
     pub max_retry_count: u32,
     pub min_cron_interval_secs: i64,
     pub block_private_networks: bool,
+    /// What to do when a file path matches
+    /// [`crate::env_safety::dev_fixture_pattern`]. Set by main.rs
+    /// from the detected environment + the
+    /// `security.allow_dev_fixture_dsls` opt-out flag.
+    pub dev_fixture_action: DevFixtureAction,
 }
 
 impl LoadPolicy {
@@ -37,6 +43,7 @@ impl LoadPolicy {
             max_retry_count: u32::MAX,
             min_cron_interval_secs: 0,
             block_private_networks: false,
+            dev_fixture_action: DevFixtureAction::Ignore,
         }
     }
 }
@@ -65,12 +72,14 @@ pub async fn load_all_bounded(
     max_retry_count: u32,
     min_cron_interval_secs: i64,
     block_private_networks: bool,
+    dev_fixture_action: DevFixtureAction,
 ) -> Result<Vec<LoadedJob>, CronManagerError> {
     let policy = LoadPolicy {
         max_file_bytes,
         max_retry_count,
         min_cron_interval_secs,
         block_private_networks,
+        dev_fixture_action,
     };
     let root = root.to_path_buf();
     let handle = tokio::task::spawn_blocking(move || load_all_with_policy(&root, &policy));
@@ -155,6 +164,36 @@ fn walk(
             walk(root, &path, policy, out, yaml_files_seen, files_failed)?;
         } else if is_yaml(&path) {
             *yaml_files_seen += 1;
+            // FLEET-STRONGHOLDS §11.3 — dev-fixture DSL gate.
+            // Applied per-file BEFORE the parse attempt so a
+            // malformed dev-fixture in prod still refuses (rather
+            // than skip-and-warning per FN2). The
+            // `Refuse` branch bubbles a fatal error out of the
+            // walk — it is a security-posture violation, not an
+            // authoring bug.
+            if let Some(pattern) =
+                crate::env_safety::dev_fixture_pattern(&path.display().to_string())
+            {
+                match policy.dev_fixture_action {
+                    DevFixtureAction::Ignore => {}
+                    DevFixtureAction::Warn => {
+                        tracing::warn!(
+                            source_path = %path.display(),
+                            pattern,
+                            "dsl: loading dev-fixture DSL (dev env or explicit opt-out permitted)",
+                        );
+                    }
+                    DevFixtureAction::Refuse => {
+                        return Err(CronManagerError::InvalidJobDefinition {
+                            source_path: path.display().to_string(),
+                            reason: format!(
+                                "REFUSING TO LOAD dev-fixture DSL in non-dev environment: matched pattern '{pattern}'. \
+                                 Remove the file from the prod build, OR set APP_ENV=dev, OR set security.allow_dev_fixture_dsls=true to explicitly permit dev-fixture DSLs in this environment (WARN at boot)."
+                            ),
+                        });
+                    }
+                }
+            }
             match load_file_with_policy(root, &path, policy) {
                 Ok(loaded) => out.extend(loaded),
                 Err(err) => {
@@ -1243,6 +1282,7 @@ mod tests {
             max_retry_count: 10,
             min_cron_interval_secs: 10,
             block_private_networks: true,
+            dev_fixture_action: DevFixtureAction::Ignore,
         };
         // Per-file error path — FN2 skips at the tree level; here
         // we assert the underlying rejection is intact.
@@ -1268,6 +1308,7 @@ mod tests {
             max_retry_count: 10,
             min_cron_interval_secs: 10,
             block_private_networks: true,
+            dev_fixture_action: DevFixtureAction::Ignore,
         };
         let file = tmp.path().join("http/rc.yaml");
         let err = load_file_with_policy(tmp.path(), &file, &policy).unwrap_err();
@@ -1292,6 +1333,7 @@ mod tests {
             max_retry_count: 10,
             min_cron_interval_secs: 10,
             block_private_networks: true,
+            dev_fixture_action: DevFixtureAction::Ignore,
         };
         let file = tmp.path().join("attack/meta.yaml");
         let err = load_file_with_policy(tmp.path(), &file, &policy).unwrap_err();
@@ -1313,6 +1355,7 @@ mod tests {
             max_retry_count: 10,
             min_cron_interval_secs: 10,
             block_private_networks: true,
+            dev_fixture_action: DevFixtureAction::Ignore,
         };
         let file = tmp.path().join("attack/loop.yaml");
         let err = load_file_with_policy(tmp.path(), &file, &policy).unwrap_err();
@@ -1334,6 +1377,7 @@ mod tests {
             max_retry_count: 10,
             min_cron_interval_secs: 10,
             block_private_networks: true,
+            dev_fixture_action: DevFixtureAction::Ignore,
         };
         let file = tmp.path().join("attack/mapped.yaml");
         let err = load_file_with_policy(tmp.path(), &file, &policy).unwrap_err();
@@ -1353,6 +1397,7 @@ mod tests {
             max_retry_count: 10,
             min_cron_interval_secs: 10,
             block_private_networks: true,
+            dev_fixture_action: DevFixtureAction::Ignore,
         };
         let file = tmp.path().join("attack/file.yaml");
         let err = load_file_with_policy(tmp.path(), &file, &policy).unwrap_err();
@@ -1374,6 +1419,7 @@ mod tests {
             max_retry_count: 10,
             min_cron_interval_secs: 10,
             block_private_networks: true,
+            dev_fixture_action: DevFixtureAction::Ignore,
         };
         let out = load_all_with_policy(tmp.path(), &policy).unwrap();
         assert_eq!(out.len(), 1);
@@ -1392,6 +1438,7 @@ mod tests {
             max_retry_count: 10,
             min_cron_interval_secs: 10,
             block_private_networks: false,
+            dev_fixture_action: DevFixtureAction::Ignore,
         };
         let out = load_all_with_policy(tmp.path(), &policy).unwrap();
         assert_eq!(out.len(), 1);
@@ -1413,6 +1460,7 @@ mod tests {
             max_retry_count: 10,
             min_cron_interval_secs: 10,
             block_private_networks: true,
+            dev_fixture_action: DevFixtureAction::Ignore,
         };
         let file = tmp.path().join("attack/ui.yaml");
         let err = load_file_with_policy(tmp.path(), &file, &policy).unwrap_err();
@@ -1437,6 +1485,7 @@ mod tests {
             10,
             10,
             true,
+            DevFixtureAction::Ignore,
         )
         .await
         .unwrap();

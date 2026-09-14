@@ -4,7 +4,9 @@
 //!
 //! DEV-REQUIREMENTS §3: real fixtures beat hand-rolled ones.
 
-use cronmanager::dsl::{loader, JobKind, Trigger};
+use cronmanager::dsl::loader::{self, LoadPolicy};
+use cronmanager::dsl::{JobKind, Trigger};
+use cronmanager::env_safety::{DevFixtureAction, Environment};
 use std::path::PathBuf;
 
 fn samples_root() -> PathBuf {
@@ -85,4 +87,141 @@ fn every_cron_sample_parses_as_a_schedule() {
             });
         }
     }
+}
+
+// ---------- FLEET-STRONGHOLDS §11.3 dev-fixture DSL gate ----------
+//
+// Belt-and-braces: the shipped `DSL/samples/` tree must NEVER trip
+// the dev-fixture pattern list — otherwise a first-time operator
+// bringing up CronManager in staging/prod with the default DSL
+// path (which points at `samples/` inside the image) would get a
+// hard boot failure. The unit tests in `env_safety::tests` pin the
+// pattern list; this test pins the shipped tree.
+
+#[test]
+fn u18_shipped_samples_tree_loads_under_refuse_action() {
+    // Simulate a prod boot: `Refuse` action + strict-ish policy.
+    // Every shipped sample must load.
+    let policy = LoadPolicy {
+        max_file_bytes: 1024 * 1024,
+        max_retry_count: 10,
+        min_cron_interval_secs: 0,
+        block_private_networks: false,
+        dev_fixture_action: DevFixtureAction::Refuse,
+    };
+    let jobs = loader::load_all_with_policy(&samples_root(), &policy)
+        .expect("shipped samples must load under prod-strict LoadPolicy");
+    assert!(!jobs.is_empty(), "expected shipped samples to yield jobs");
+}
+
+#[test]
+fn u18_dev_fixture_file_refused_in_prod() {
+    use tempfile::TempDir;
+    let tmp = TempDir::new().unwrap();
+    // Put a legit job AND a dev-fixture file side-by-side.
+    std::fs::create_dir_all(tmp.path().join("prod")).unwrap();
+    std::fs::create_dir_all(tmp.path().join("mock-platform")).unwrap();
+    std::fs::write(
+        tmp.path().join("prod/health.yaml"),
+        "hc:\n  trigger: off\n  type: http\n  method: GET\n  url: https://example.com/\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("mock-platform/health.yaml"),
+        "hc:\n  trigger: off\n  type: http\n  method: GET\n  url: https://example.com/\n",
+    )
+    .unwrap();
+    // Simulate a Production boot: allow_dev_fixture_dsls=false.
+    let action = DevFixtureAction::from_env(Environment::Production, false);
+    assert_eq!(action, DevFixtureAction::Refuse);
+    let policy = LoadPolicy {
+        max_file_bytes: 1024 * 1024,
+        max_retry_count: 10,
+        min_cron_interval_secs: 0,
+        block_private_networks: false,
+        dev_fixture_action: action,
+    };
+    let err = loader::load_all_with_policy(tmp.path(), &policy).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("REFUSING TO LOAD"), "err: {msg}");
+    assert!(msg.contains("mock-"), "err: {msg}");
+}
+
+#[test]
+fn u18_dev_fixture_file_permitted_in_dev_with_warn() {
+    use tempfile::TempDir;
+    let tmp = TempDir::new().unwrap();
+    std::fs::create_dir_all(tmp.path().join("mock-platform")).unwrap();
+    std::fs::write(
+        tmp.path().join("mock-platform/health.yaml"),
+        "hc:\n  trigger: off\n  type: http\n  method: GET\n  url: https://example.com/\n",
+    )
+    .unwrap();
+    // Simulate a Dev boot: action collapses to Warn.
+    let action = DevFixtureAction::from_env(Environment::Dev, false);
+    assert_eq!(action, DevFixtureAction::Warn);
+    let policy = LoadPolicy {
+        max_file_bytes: 1024 * 1024,
+        max_retry_count: 10,
+        min_cron_interval_secs: 0,
+        block_private_networks: false,
+        dev_fixture_action: action,
+    };
+    let jobs = loader::load_all_with_policy(tmp.path(), &policy).unwrap();
+    assert_eq!(jobs.len(), 1);
+}
+
+#[test]
+fn u18_dev_fixture_file_permitted_in_prod_when_opted_out() {
+    use tempfile::TempDir;
+    let tmp = TempDir::new().unwrap();
+    std::fs::create_dir_all(tmp.path().join("mock-platform")).unwrap();
+    std::fs::write(
+        tmp.path().join("mock-platform/health.yaml"),
+        "hc:\n  trigger: off\n  type: http\n  method: GET\n  url: https://example.com/\n",
+    )
+    .unwrap();
+    // Simulate Prod boot with allow_dev_fixture_dsls=true.
+    let action = DevFixtureAction::from_env(Environment::Production, true);
+    assert_eq!(action, DevFixtureAction::Warn);
+    let policy = LoadPolicy {
+        max_file_bytes: 1024 * 1024,
+        max_retry_count: 10,
+        min_cron_interval_secs: 0,
+        block_private_networks: false,
+        dev_fixture_action: action,
+    };
+    let jobs = loader::load_all_with_policy(tmp.path(), &policy).unwrap();
+    assert_eq!(jobs.len(), 1);
+}
+
+#[test]
+fn u18_first_dev_fixture_match_is_fatal_even_after_good_files() {
+    // Break-the-fix: if a good file loads first, then a
+    // dev-fixture file is encountered, the walk must still abort
+    // with the REFUSING TO LOAD error. Not partial success.
+    use tempfile::TempDir;
+    let tmp = TempDir::new().unwrap();
+    std::fs::create_dir_all(tmp.path().join("aa-prod")).unwrap();
+    std::fs::create_dir_all(tmp.path().join("zz-mock-late")).unwrap();
+    std::fs::write(
+        tmp.path().join("aa-prod/health.yaml"),
+        "hc:\n  trigger: off\n  type: http\n  method: GET\n  url: https://example.com/\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("zz-mock-late/probe.yaml"),
+        "p:\n  trigger: off\n  type: http\n  method: GET\n  url: https://example.com/\n",
+    )
+    .unwrap();
+    let action = DevFixtureAction::from_env(Environment::Production, false);
+    let policy = LoadPolicy {
+        max_file_bytes: 1024 * 1024,
+        max_retry_count: 10,
+        min_cron_interval_secs: 0,
+        block_private_networks: false,
+        dev_fixture_action: action,
+    };
+    let err = loader::load_all_with_policy(tmp.path(), &policy).unwrap_err();
+    assert!(err.to_string().contains("REFUSING TO LOAD"));
 }

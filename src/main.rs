@@ -111,6 +111,15 @@ async fn main() -> anyhow::Result<()> {
     }
     let scheduler = Scheduler::new(bundle);
 
+    // FLEET-STRONGHOLDS §11.3 — dev-fixture DSL gate. In non-dev
+    // environments (APP_ENV/ENVIRONMENT/DEPLOY_ENV != dev), any
+    // file whose path matches a documented dev-fixture pattern
+    // (dev-login, mock-, -mock, /test/, example-, -example,
+    // /dev/, /mocks/) is refused at load. The
+    // `security.allow_dev_fixture_dsls=true` opt-out downgrades
+    // to WARN in every environment.
+    let dev_fixture_action =
+        env_safety::DevFixtureAction::from_env(env, cfg.security.allow_dev_fixture_dsls);
     let jobs = loader::load_all_bounded(
         &cfg.dsl_path,
         cfg.security.max_dsl_file_bytes,
@@ -118,6 +127,7 @@ async fn main() -> anyhow::Result<()> {
         cfg.security.max_retry_count,
         cfg.security.min_cron_interval_secs,
         cfg.security.block_private_networks,
+        dev_fixture_action,
     )
     .await?;
     let job_count = jobs.len();
