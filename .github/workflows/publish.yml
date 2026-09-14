@@ -148,17 +148,31 @@ jobs:
       # Smoke test each per-arch image. Docker keys locally-cached
       # images by digest, not (digest, platform), so we docker rmi
       # between iterations and pull explicitly with --platform.
+      #
+      # `CRONMANAGER_ADMIN_TOKEN` is required because the container
+      # binds to 0.0.0.0:8080 and the C1 admin-gate refuses to start
+      # on any non-loopback bind without a token (see book/src/
+      # security.md). The token value here is smoke-only, never
+      # touched by a real caller, and the container is torn down
+      # after the /health probe.
+      #
+      # `--rm` was previously on the docker run — removed so we can
+      # `docker logs` on failure. The explicit `docker rm -f` at
+      # the end handles cleanup in the happy path.
       - name: Smoke test — /health on both arches
         env:
           IMAGE: docker.io/turnerrainer/cronmanager@${{ steps.build.outputs.digest }}
+          SMOKE_TOKEN: smoke-only-token-not-a-real-secret-32chars
         run: |
           set -euo pipefail
           for platform in linux/amd64 linux/arm64; do
             echo "::group::smoke test on ${platform}"
             docker image rm -f "${IMAGE}" >/dev/null 2>&1 || true
             docker pull --quiet --platform "${platform}" "${IMAGE}"
-            cid="$(docker run -d --rm --platform "${platform}" \
-                   -p 18080:8080 "${IMAGE}")"
+            cid="$(docker run -d --platform "${platform}" \
+                   -p 18080:8080 \
+                   -e CRONMANAGER_ADMIN_TOKEN="${SMOKE_TOKEN}" \
+                   "${IMAGE}")"
 
             ok=0
             for i in $(seq 1 90); do
@@ -172,7 +186,9 @@ jobs:
 
             if [ "${ok}" -ne 1 ]; then
               echo "::error::${platform}: /health did not respond within 90s"
+              echo "--- container logs (${platform}) ---"
               docker logs "${cid}" || true
+              echo "--- end container logs ---"
               docker rm -f "${cid}" >/dev/null 2>&1 || true
               exit 1
             fi
