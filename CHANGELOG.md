@@ -8,6 +8,111 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2-alpha] - 2026-09-18
+
+h2ck.me v1 audit-cycle round — closes six findings surfaced in
+`h2ck.me/projects/CronManager-on-Rust/v1/NEXT-TASKS.md` (2026-09-17).
+Every fix / feature landed as its own one-issue-one-branch-one-PR
+per the project's ops policy: PRs #20, #22, #24, #26, #28, #30.
+
+239 tests pass (was 223 on 0.2.1-alpha; added +6 lock-order pin,
++3 405 pins, +1 axum shutdown wiring, +1 SIGTERM handler unit,
++3 offline-mode dispatch/env, +7 doctor findings + render); `cargo
+fmt --check` + `cargo clippy --all-targets -- -D warnings` +
+`cargo audit --deny warnings` + `cargo deny check all` + `mdbook
+build` all clean.
+
+Patch version bump. CronManager ships as a binary, not a library
+— there are no external Rust API consumers — so the two additive
+items with in-crate shape implications (new `ExecutionStatus::Offline`
+variant, new `ExecutorBundle.offline_mode: bool` field) don't
+warrant a minor bump on their own. Config / DSL / HTTP / CLI
+surface stays fully backward-compatible with 0.2.1-alpha; every
+new lever defaults to the pre-existing behaviour
+(`CRONMANAGER_OFFLINE` unset = 100% behavioural parity).
+
+Ships on `dev` only. `main` remains at `0.1.4-alpha`.
+
+### Added
+
+- **`cronmanager doctor` CLI subcommand** — synchronous offline
+  config audit. Loads the same config the boot path would, runs
+  every check `main.rs` runs (env-safety, refuse-to-start, DSL
+  path existence, database env, weak posture flags) and prints
+  severity-prefixed findings (`FATAL` / `BREAK` / `WEAK` / `INFO`).
+  Exits `1` on any FATAL. Never binds a listener, never touches
+  the DB. Wire into container `HEALTHCHECK` or pre-deploy CI.
+  Adopts FLEET-STRONGHOLDS §8.2 (XTR-pattern). (h2ck.me v1 T-19,
+  PR #30.)
+- **`CRONMANAGER_OFFLINE=true`** env-var lever — short-circuits
+  every HTTP + shell dispatch. One history row per fire records
+  `status=OFFLINE`, no network call, no child process. Boot
+  emits a WARN and doctor surfaces an INFO. Truthy values:
+  `true` / `1` / `yes` / `on` (case-insensitive). New
+  `ExecutionStatus::Offline` variant with label `OFFLINE` — the
+  `job_execution_history.status` column is `VARCHAR(50)` so no
+  migration is required. New public `ExecutorBundle.offline_mode:
+  bool` field. Adopts FLEET-STRONGHOLDS §9.1. (h2ck.me v1 U15,
+  PR #28.)
+- **Graceful shutdown on SIGTERM (unix) + SIGINT / Ctrl+C** —
+  `axum::serve(..).with_graceful_shutdown(shutdown_signal())`
+  drains in-flight requests when the container orchestrator
+  sends SIGTERM (`docker stop`, k8s pod eviction). Before this
+  change, in-flight requests were aborted mid-flight and their
+  history rows lost. New `src/signal.rs` module holds the
+  future. Windows: only Ctrl+C is available; tokio's ctrl_c
+  handler covers both platforms. New `libc` dev-dependency
+  (SIGTERM-to-self regression pin). (h2ck.me v1 T-18 /
+  FLEET §34.4, PR #26.)
+
+### Changed
+
+- **`tower_http::RequestBodyLimitLayer` 413 body** is now
+  structured JSON matching every other failure path in the
+  codebase: `{"error":"request_too_large","message":"...","limit":N}`.
+  Previously the layer emitted a bare-text body that JSON clients
+  couldn't parse. New `structured_error_body_middleware` in
+  `src/router.rs`, wired outside the body-limit layer via
+  `from_fn_with_state`. Handler-generated 413s (e.g.
+  `TooManyQueryParams`) that already carry `application/json`
+  pass through untouched. (h2ck.me v1 T-15 /
+  FLEET-STRONGHOLDS §U10, PR #22.)
+
+### Fixed
+
+- **`Scheduler::describe_running` lock-order inversion risk** —
+  the method used to acquire `running` then `jobs` and hold both
+  simultaneously, while every other acquisition site
+  (`stop`, `trigger_now`, `reload_from`) takes at most one at a
+  time. Any future caller going `jobs`→`running` could have
+  deadlocked. `describe_running` now snapshots `running` under
+  its own lock (cloning JobKey + started_at_ms + schedule),
+  releases it, then takes `jobs` for the per-key `last_result`
+  lookup. No method in `src/scheduler.rs` holds both
+  simultaneously anymore. Regression pin
+  (`describe_running_and_reload_do_not_deadlock`) hammers
+  `describe_running` + `reload_from` + `stop` concurrently for
+  500 ms with a 10 s timeout guard. (h2ck.me v1 T-5 /
+  2026-09-17 concurrency mini-audit R-4, PR #20.)
+- **mdbook-linkcheck failure on CHANGELOG version headings** —
+  the linkcheck flagged `## [0.2.1-alpha]` / `## [0.2.0-alpha]`
+  as "potential incomplete link" (pre-existing failure on
+  `dev`). Add explicit link definitions at the bottom of
+  CHANGELOG.md — the Keep-a-Changelog idiom — so linkcheck
+  resolves them.
+
+### Tests
+
+- **405 Method Not Allowed regression pins** — axum's
+  `MethodRouter` already emits 405 with the correct `Allow:`
+  header when the path matches but the method doesn't, but no
+  regression tests locked the behaviour. New
+  `wrong_method_on_health_returns_405_with_allow_header`,
+  `wrong_method_on_execute_returns_405`, and
+  `unknown_path_still_returns_404` guard against a future
+  `Router::fallback` refactor silently downgrading to 404 or
+  vice versa. (h2ck.me v1 T-17 / RFC 7231 §7.4.1, PR #24.)
+
 ## [0.2.1-alpha] - 2026-09-14
 
 Security-patch republish of `0.2.0-alpha`. Application code is
@@ -461,7 +566,10 @@ per the Buerostack `DEV-REQUIREMENTS.md` ruleset.
   `HANDOFF.md`, `SECURITY.md`, `STANDARDS.md`, `NOTICE`,
   `VERSION`, `deny.toml`, `.cargo/audit.toml`, `book/`, `tasks/`.
 
-[Unreleased]: https://github.com/turnerrainer/cronmanager/compare/v0.1.4-alpha...HEAD
+[Unreleased]: https://github.com/turnerrainer/cronmanager/compare/v0.2.2-alpha...HEAD
+[0.2.2-alpha]: https://github.com/turnerrainer/cronmanager/releases/tag/v0.2.2-alpha
+[0.2.1-alpha]: https://github.com/turnerrainer/cronmanager/releases/tag/v0.2.1-alpha
+[0.2.0-alpha]: https://github.com/turnerrainer/cronmanager/releases/tag/v0.2.0-alpha
 [0.1.4-alpha]: https://github.com/turnerrainer/cronmanager/releases/tag/v0.1.4-alpha
 [0.1.0-alpha.3]: https://github.com/turnerrainer/cronmanager/releases/tag/v0.1.0-alpha.3
 [0.1.0-alpha.2]: https://github.com/turnerrainer/cronmanager/releases/tag/v0.1.0-alpha.2

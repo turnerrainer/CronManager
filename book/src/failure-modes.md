@@ -48,6 +48,7 @@ persistence is enabled:
 | `FAILED` | Final attempt failed and `ignoreFailures` was false. |
 | `SKIPPED` | Fire suppressed by `startDate`/`endDate` window, or `ignoreFailures: true` swallowed a failure. |
 | `TIMEOUT` | Shell job exceeded `limits.shell_timeout_secs` and was killed. |
+| `OFFLINE` | Dispatch short-circuited by `CRONMANAGER_OFFLINE=true` (FLEET §9.1). No network call and no child process — one row per fire is still recorded so downstream reports know the outage lever is engaged. |
 
 ## Common causes
 
