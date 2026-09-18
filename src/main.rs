@@ -6,6 +6,7 @@
 use cronmanager::{
     config::AppConfig, dsl::loader, env_safety, executor::ExecutorBundle,
     history::postgres::PostgresRecorder, history::NoopRecorder, router, scheduler::Scheduler,
+    signal::shutdown_signal,
 };
 use std::sync::Arc;
 
@@ -127,11 +128,20 @@ async fn main() -> anyhow::Result<()> {
     // simpler `axum::serve(listener, app)` shape and get `None`
     // for the client field — the log line still emits, just
     // without the hash.
+    //
+    // h2ck.me v1 T-18 / FLEET §34.4 — with_graceful_shutdown lets
+    // the process finish in-flight requests when the container
+    // orchestrator sends SIGTERM (docker stop, k8s pod eviction).
+    // Without it the receive-side would abort mid-request and job
+    // history rows could be lost. See `shutdown_signal()` for the
+    // event set.
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
+    .with_graceful_shutdown(shutdown_signal())
     .await?;
+    tracing::info!("shutdown complete");
     Ok(())
 }
 
