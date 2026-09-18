@@ -6,16 +6,18 @@ is, which behaviours changed recently, how to spot a broken
 config, how to fix one, and which config shape is the current
 best-practice baseline.
 
-**Current release**: `0.2.1-alpha` (see `VERSION`, `Cargo.toml`,
+**Current release**: `0.2.2-alpha` (see `VERSION`, `Cargo.toml`,
 `CHANGELOG.md`). Branch of record for active work: `dev` — this is
 also the default branch on GitHub. There is no `main` branch yet;
 alphas are cut as git tags on `dev` (`v0.1.4-alpha` → `fe1f517`,
 `v0.2.0-alpha` → `7d72714` [**yanked** for CVE remediation],
 `v0.2.1-alpha` supersedes v0.2.0-alpha with a Dockerfile
-`apt-get upgrade` on the runtime layer) and published as GitHub
-Releases (`v0.1.4-alpha` marked Latest / stable, `v0.2.1-alpha`
-marked Pre-release). `main` will be created and tagged only when
-the project reaches prod-ready state, targeted at `v1.0.0`.
+`apt-get upgrade` on the runtime layer, `v0.2.2-alpha` closes the
+h2ck.me v1 audit-cycle on top of v0.2.1-alpha) and published as
+GitHub Releases (`v0.1.4-alpha` marked Latest / stable,
+`v0.2.1-alpha` + `v0.2.2-alpha` marked Pre-release). `main` will
+be created and tagged only when the project reaches prod-ready
+state, targeted at `v1.0.0`.
 **Never push a `main` branch or move code there without explicit
 maintainer approval.**
 
@@ -234,7 +236,8 @@ below adds these substrings on top of the `0.1.4-alpha` set:
 | `per_group_token_envs[X]=Y is unset or empty` | Env var named in `security.per_group_token_envs` isn't exported. Group X falls back to master-only. |
 | `dsl: N/M file(s) failed to load — see preceding ERROR lines` | Skip-and-warn triggered. Look up-log for the per-file `dsl: skipping file` ERROR lines. |
 | `dsl: no jobs loaded — every DSL file … failed to parse` | Distinct signal that the tree is fully broken even though boot succeeded. |
-| `MYSVC_OFFLINE=true` (n/a here) | Not implemented in CronManager; FLEET §9.1 reference. |
+| `CRONMANAGER_OFFLINE=true — every job dispatch will be short-circuited` | Offline lever engaged (item 18 below). Every fire records `status=OFFLINE` and skips every side effect. |
+| `shutdown: SIGTERM received, draining in-flight requests` | Graceful shutdown active (item 17 below). Followed by `shutdown complete` when serve resolves. |
 
 **Hard boot failures introduced by env-safety:**
 
@@ -242,6 +245,78 @@ below adds these substrings on top of the `0.1.4-alpha` set:
 |---|---|---|
 | `REFUSING TO START in Production: N weak/default credential(s) detected` | Env-safety §11.1: admin token / DB password matched a weak pattern or is too short. | Rotate the affected env var(s) to a strong value; the error names each redacted (`01****ef`). Or set `APP_ENV=dev` to permit dev defaults locally. |
 | `REFUSING TO START in Production: N unsafe posture item(s)` | Env-safety §11.2: `admin.trust_network=true` / `block_private_networks=false` / `allow_dangerous_env_overrides=true` in a non-dev env. | Flip each named flag to its safe default. |
+
+## Breaking / non-obvious changes in `0.2.2-alpha` (since `0.2.1-alpha`)
+
+Closes the h2ck.me v1 audit-cycle surfaced by
+`h2ck.me/projects/CronManager-on-Rust/v1/NEXT-TASKS.md` (2026-09-17).
+Every fix / feature landed as its own one-issue-one-branch-one-PR
+per the project's ops policy: PRs #20, #22, #24, #26, #28, #30.
+**None are required by upgraders** — every new lever is opt-in
+and preserves existing behaviour. Patch bump: CronManager ships
+as a binary, not a library, so the two additive items with
+in-crate shape implications (new `ExecutionStatus::Offline`
+variant, new `ExecutorBundle.offline_mode: bool` field) don't
+warrant a minor bump on their own — no external Rust API
+consumers exist. Config / DSL / HTTP / CLI surface stays fully
+backward-compatible with 0.2.1-alpha.
+
+16. **`cronmanager doctor` subcommand** (h2ck.me v1 T-19 /
+    FLEET §8.2). New offline-audit binary path. Loads the same
+    config the boot path would, replays every check `main` runs
+    (env-safety, `refuse_to_start_without_token`, DSL directory,
+    database env, weak posture flags) and prints one
+    severity-prefixed line per finding (`FATAL`/`BREAK`/`WEAK`/`INFO`)
+    plus a summary. Exits `1` on FATAL. Never binds a listener,
+    never touches the DB. Wire into CI or container
+    `HEALTHCHECK` for pre-deploy auditing. See `src/doctor.rs`.
+
+17. **Graceful shutdown on SIGTERM + SIGINT** (h2ck.me v1 T-18 /
+    FLEET §34.4). `axum::serve` is now wrapped in
+    `with_graceful_shutdown(shutdown_signal())` — `docker stop`
+    and k8s pod-eviction let in-flight requests finish their
+    wall-clock before the runtime exits. The signal future lives
+    in the new `src/signal.rs` module.
+
+18. **`CRONMANAGER_OFFLINE=true` execution lever** (h2ck.me v1
+    U15 / FLEET §9.1). When set, every dispatch (HTTP + shell) is
+    short-circuited: no network call, no child process, one
+    history row per fire with `status=OFFLINE`. Boot emits a WARN,
+    doctor surfaces an INFO. Truthy values: `true`, `1`, `yes`,
+    `on` (case-insensitive). New `ExecutionStatus::Offline` variant
+    with label `OFFLINE`; the `job_execution_history.status`
+    column is `VARCHAR(50)` so no migration is required.
+
+19. **Structured JSON body on `RequestBodyLimitLayer` 413s**
+    (h2ck.me v1 T-15 / FLEET §U10). tower_http used to emit a
+    bare-text `Length limit exceeded` body that JSON clients
+    couldn't parse. A new
+    `structured_error_body_middleware` in `src/router.rs` runs
+    outside the body-limit layer and rewrites any 413 whose
+    Content-Type isn't already `application/json` to
+    `{"error":"request_too_large","message":"...","limit":N}`.
+    Handler-generated 413s (e.g. `TooManyQueryParams`) are passed
+    through untouched.
+
+20. **Scheduler lock-order invariant** (h2ck.me v1 T-5 /
+    2026-09-17 concurrency mini-audit). `Scheduler::describe_running`
+    used to hold both `running` and `jobs` simultaneously in
+    the reverse order to every other acquisition site. It now
+    snapshots `running` under its own lock and releases it before
+    touching `jobs`. No method in `src/scheduler.rs` holds both
+    at once now; a stress-test regression pin hammers
+    `describe_running` + `reload_from` + `stop` concurrently for
+    500ms with a 10s timeout guard.
+
+21. **405 Method Not Allowed regression pins** (h2ck.me v1 T-17).
+    Axum's `MethodRouter` already emits `405` with the correct
+    `Allow:` header when the path matches but the method does not;
+    the new integration tests
+    (`wrong_method_on_health_returns_405_with_allow_header`,
+    `wrong_method_on_execute_returns_405`,
+    `unknown_path_still_returns_404`) guarantee any future
+    refactor that installs a catch-all fallback can't silently
+    downgrade the behaviour to `404`.
 
 ## Finding problematic configs
 

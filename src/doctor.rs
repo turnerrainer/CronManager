@@ -160,6 +160,12 @@ pub fn run(cfg: &AppConfig, env: Environment) -> DoctorReport {
 
     // ---------- INFO block ----------
     findings.push(Finding::info("port", format!("bind port {}", cfg.port)));
+    if crate::executor::ExecutorBundle::offline_from_env() {
+        findings.push(Finding::info(
+            "offline_mode",
+            "CRONMANAGER_OFFLINE=true — every dispatch will be stubbed to status=OFFLINE",
+        ));
+    }
     findings.push(Finding::info(
         "dsl_path",
         format!("DSL directory: {}", cfg.dsl_path.display()),

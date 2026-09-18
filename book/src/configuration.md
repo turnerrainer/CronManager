@@ -346,7 +346,45 @@ field):
 | `CRONMANAGER_DB_PASSWORD` (or whatever `database.password_env` names) | The DB password. Absence fails startup when `database.url` is set. |
 | Any env var named in `security.per_group_token_envs` | Optional per-group tokens (see above). Missing envs WARN at boot; groups fall back to master-only. |
 | `APP_ENV` / `ENVIRONMENT` / `DEPLOY_ENV` | Deployment classifier — `production`, `staging`, `test`, `dev` (default). Non-`dev` values REFUSE to boot on weak credentials or unsafe posture flags. Unknown values fail-safe to `Production`. |
+| `CRONMANAGER_OFFLINE` | When set to `true` / `1` / `yes` / `on` (case-insensitive), every job dispatch — HTTP and shell alike — is short-circuited. Each fire records one history row with `status=OFFLINE`; no network call, no child process. Boot emits a WARN so the operator sees the lever is engaged. Reset by unsetting the variable and restarting. |
 | `RUST_LOG` | `tracing_subscriber` filter — e.g. `info`, `cronmanager=debug`, `info,cronmanager=trace`. |
+
+## `cronmanager doctor` — offline config audit
+
+Run `cronmanager doctor` (no server binding, no DB access) to
+replay every check the boot path runs. It prints one severity-
+prefixed line per finding and exits `1` on any `FATAL`:
+
+```
+cronmanager doctor — production environment
+[INFO ] port: bind port 8080
+[INFO ] dsl_path: DSL directory: /app/DSL/samples
+[INFO ] admin.token: admin bearer token resolved from env
+[FATAL] refuse_to_start: process would REFUSE to boot: non-loopback bind 0.0.0.0:8080 without an admin token and admin.trust_network=false
+[WEAK ] security.expose_jobs_publicly: GET /jobs is anonymous even though an admin token is configured
+summary: 1 fatal, 0 break, 1 weak, 3 info
+```
+
+Severity ladder:
+
+- `FATAL` — refuse-to-start conditions in the target env
+  (`env_safety` + `refuse_to_start_without_token`). Exit code 1.
+- `BREAK` — the process WILL fail at runtime even if it boots
+  (missing env var referenced by config, unreachable DSL directory).
+- `WEAK` — insecure default that boot only WARNs about.
+- `INFO` — descriptive facts (bind, dsl_path, history).
+
+Wire into CI or container `HEALTHCHECK` for pre-deploy auditing.
+
+## Graceful shutdown
+
+The process installs SIGTERM (unix) and SIGINT (Ctrl+C) handlers.
+On either signal `axum::serve` drains in-flight requests before
+resolving, then the process exits cleanly. `docker stop` / k8s pod
+eviction get the full grace window (default 10s in Docker,
+`terminationGracePeriodSeconds` in k8s) instead of ripping sockets
+mid-request. Look for `INFO shutdown: SIGTERM received, draining
+in-flight requests` and `INFO shutdown complete` in the log stream.
 
 ## Access logging
 
