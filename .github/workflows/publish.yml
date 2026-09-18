@@ -220,8 +220,18 @@ jobs:
   # Cut the GitHub Release once the container has been published,
   # smoke-tested, and signed. Runs on both tag-push and
   # workflow_dispatch paths — the latter lets an operator backfill
-  # a missing Release for an already-tagged version. If the Release
-  # already exists this job is a no-op (skip step below).
+  # a missing Release for an already-tagged version.
+  #
+  # Every newly-cut release is marked `--latest` so it appears in
+  # the repo landing-page sidebar Releases widget. GitHub's
+  # `make_latest` field is independent of `prerelease` — a
+  # pre-release CAN be the Latest, and for a pre-release-only
+  # project (alpha / beta lines) that's what an operator visiting
+  # the repo actually wants to see. When re-running against an
+  # already-existing release, the "already exists" step edits the
+  # release to promote it to Latest instead of skipping — so a
+  # workflow_dispatch re-run after this job first shipped will
+  # backfill the Latest badge on prior releases too.
   #
   # Release notes come from the CHANGELOG.md section for the tag's
   # version. The pre-release flag is set from the tag suffix (any
@@ -255,8 +265,10 @@ jobs:
           echo "version=$VERSION"         >> "$GITHUB_OUTPUT"
           echo "prerelease=$PRERELEASE"   >> "$GITHUB_OUTPUT"
 
-      # Skip cleanly if the Release already exists — matters for
-      # workflow_dispatch re-runs of an already-published tag.
+      # Detect whether the Release already exists — matters for
+      # workflow_dispatch re-runs of an already-published tag. If
+      # it exists, the "Promote existing Release to Latest" step
+      # below runs; otherwise the create-flow steps run.
       - name: Check if Release already exists
         id: exists
         env:
@@ -265,7 +277,7 @@ jobs:
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "already=true" >> "$GITHUB_OUTPUT"
-            echo "Release $TAG already exists — skipping"
+            echo "Release $TAG already exists — will promote to Latest"
           else
             echo "already=false" >> "$GITHUB_OUTPUT"
           fi
@@ -303,7 +315,7 @@ jobs:
           cat "$NOTES_FILE"
           echo "--- end release notes ---"
 
-      - name: Create GitHub Release
+      - name: Create GitHub Release (marks as Latest)
         if: steps.exists.outputs.already == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -316,8 +328,30 @@ jobs:
           if [ "$PRERELEASE" = "true" ]; then
             FLAGS+=(--prerelease)
           fi
+          # `--latest` is unconditional — every newly-cut release
+          # must show on the repo landing page. GitHub's
+          # `make_latest` is independent of `prerelease`, so an
+          # alpha-line project like this one still gets its most
+          # recent release surfaced in the sidebar widget.
           gh release create "$TAG" \
             --title "$TAG" \
             --notes-file "$NOTES_FILE" \
             --verify-tag \
+            --latest \
             "${FLAGS[@]}"
+
+      # workflow_dispatch re-run against an already-published tag:
+      # the Release object already exists but may not carry the
+      # Latest badge (e.g. a prior run before this pipeline gained
+      # the `--latest` flag). Edit it in-place to promote to Latest;
+      # notes stay whatever the operator or a prior workflow left
+      # there.
+      - name: Promote existing Release to Latest
+        if: steps.exists.outputs.already == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          echo "Promoting existing Release $TAG to Latest"
+          gh release edit "$TAG" --latest
