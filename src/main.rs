@@ -4,13 +4,23 @@
 //! DSL loader → scheduler → axum router → serve.
 
 use cronmanager::{
-    config::AppConfig, dsl::loader, env_safety, executor::ExecutorBundle,
+    config::AppConfig, doctor, dsl::loader, env_safety, executor::ExecutorBundle,
     history::postgres::PostgresRecorder, history::NoopRecorder, router, scheduler::Scheduler,
 };
 use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // h2ck.me v1 T-19: `cronmanager doctor` is a synchronous
+    // offline config audit — never binds a listener, never touches
+    // the DB. Handled before tracing init so the operator's stdout
+    // isn't polluted with the fmt subscriber's boot lines.
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "doctor") {
+        let code = doctor::cli_entry()?;
+        std::process::exit(code);
+    }
+
     // Audit LOG-v1 FN-LOG-1: emit ANSI colour codes only when stderr is
     // a TTY. Under Docker / systemd, ship plain-text logs for SIEM.
     use std::io::IsTerminal;
