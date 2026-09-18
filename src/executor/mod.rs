@@ -41,6 +41,13 @@ pub struct ExecutorBundle {
     pub http: http::HttpExecutor,
     pub shell: shell::ShellExecutor,
     pub history: Arc<dyn HistoryRecorder>,
+    /// FLEET-STRONGHOLDS §9.1 / h2ck.me v1 U15 — when true,
+    /// `dispatch` short-circuits every HTTP and shell job, records a
+    /// history row with status=OFFLINE, and returns without touching
+    /// the network or forking a process. Read from
+    /// `CRONMANAGER_OFFLINE=true` at boot; see
+    /// [`ExecutorBundle::offline_from_env`].
+    pub offline_mode: bool,
 }
 
 impl ExecutorBundle {
@@ -55,7 +62,23 @@ impl ExecutorBundle {
             )?,
             shell: shell::ShellExecutor::new(cfg),
             history,
+            offline_mode: Self::offline_from_env(),
         })
+    }
+
+    /// Read `CRONMANAGER_OFFLINE` and return true iff the value
+    /// parses as a truthy string. Accepts `true`, `1`, `yes`, `on`
+    /// (case-insensitive). Anything else — including unset — is
+    /// false. Kept as an associated function so tests can drive the
+    /// bundle offline by setting `offline_mode = true` directly.
+    pub fn offline_from_env() -> bool {
+        match std::env::var("CRONMANAGER_OFFLINE") {
+            Ok(v) => matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "true" | "1" | "yes" | "on"
+            ),
+            Err(_) => false,
+        }
     }
 
     /// Execute one full dispatch (all retries, all history rows).
@@ -68,6 +91,16 @@ impl ExecutorBundle {
         extras: DispatchExtras,
         cancel: Arc<Notify>,
     ) -> DispatchOutcome {
+        // h2ck.me v1 U15 / FLEET-STRONGHOLDS §9.1: bypass the
+        // network / process entirely. Records one history row with
+        // status=OFFLINE so downstream reports can distinguish
+        // "outage lever pulled" from "job legitimately succeeded"
+        // and from "job legitimately failed". Returns immediately —
+        // no retry loop, no cancellation dance, no side effect.
+        if self.offline_mode {
+            return self.offline_stub(spec).await;
+        }
+
         let max_attempts = spec.retry.count + 1;
         let mut last_error: Option<String> = None;
 
@@ -326,6 +359,43 @@ impl ExecutorBundle {
             last_error,
         }
     }
+
+    /// h2ck.me v1 U15 / FLEET §9.1: return an OFFLINE outcome
+    /// without invoking any executor, and record it in history so
+    /// downstream reports know a fire was intentionally stubbed.
+    async fn offline_stub(&self, spec: &JobSpec) -> DispatchOutcome {
+        let (method, url) = match &spec.kind {
+            JobKind::Http { method, url } => (Some(method.clone()), Some(url.clone())),
+            JobKind::Exec { .. } => (None, None),
+        };
+        tracing::info!(
+            job = %format!("{}/{}", spec.key.group, spec.key.name),
+            kind = spec.kind.type_label(),
+            "offline: dispatch stubbed by CRONMANAGER_OFFLINE=true — no side effect executed"
+        );
+        self.history
+            .record(HistoryEntry {
+                execution_time: Utc::now(),
+                job_name: spec.key.name.clone(),
+                job_group: spec.key.group.clone(),
+                job_type: spec.kind.type_label().to_string(),
+                duration_ms: Some(0),
+                status: ExecutionStatus::Offline,
+                http_method: method,
+                http_url: url,
+                http_status_code: None,
+                attempt_number: 1,
+                max_attempts: 1,
+                response_body: None,
+                error_message: Some("CRONMANAGER_OFFLINE=true".to_string()),
+            })
+            .await;
+        DispatchOutcome {
+            status: ExecutionStatus::Offline,
+            attempts: 1,
+            last_error: None,
+        }
+    }
 }
 
 /// Intermediate carrier used inside `dispatch` to unify HTTP + shell
@@ -373,6 +443,146 @@ impl HttpDispatchResult {
             http_status_code: None,
             error_message: Some(err.to_string()),
             is_shell_timeout,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AppConfig;
+    use crate::dsl::{JobKey, JobSpec, RetryPolicy, TimeWindow, Trigger};
+    use crate::history::{ExecutionStatus, HistoryEntry, HistoryRecorder};
+    use async_trait::async_trait;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct RecordingRecorder(Arc<Mutex<Vec<HistoryEntry>>>);
+
+    #[async_trait]
+    impl HistoryRecorder for RecordingRecorder {
+        async fn record(&self, entry: HistoryEntry) {
+            self.0.lock().unwrap().push(entry);
+        }
+    }
+
+    fn cfg() -> AppConfig {
+        AppConfig {
+            app_root_path: std::env::temp_dir(),
+            ..AppConfig::default()
+        }
+    }
+
+    fn http_job() -> JobSpec {
+        JobSpec {
+            key: JobKey::new("g", "http"),
+            trigger: Trigger::Manual,
+            window: TimeWindow::default(),
+            retry: RetryPolicy::default(),
+            kind: JobKind::Http {
+                method: "GET".into(),
+                // Non-routable IP — if offline_mode did NOT
+                // short-circuit, the actual dispatch would either
+                // hit SSRF pre-flight or time out on the socket.
+                // With offline_mode the URL is never dialed.
+                url: "http://example.invalid/".into(),
+            },
+        }
+    }
+
+    fn shell_job() -> JobSpec {
+        JobSpec {
+            key: JobKey::new("g", "sh"),
+            trigger: Trigger::Manual,
+            window: TimeWindow::default(),
+            retry: RetryPolicy::default(),
+            kind: JobKind::Exec {
+                // A command that WOULD fail if actually run — if
+                // offline_mode did NOT stub, this would surface as
+                // FAILED (nonexistent binary).
+                argv: vec!["/definitely/nonexistent/binary".into()],
+                allowed_envs: vec![],
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn offline_mode_short_circuits_http_dispatch() {
+        let rec = Arc::new(RecordingRecorder::default());
+        let history: Arc<dyn HistoryRecorder> = rec.clone();
+        let mut bundle = ExecutorBundle::new(&cfg(), history).unwrap();
+        bundle.offline_mode = true;
+
+        let outcome = bundle
+            .dispatch(
+                &http_job(),
+                DispatchExtras::default(),
+                Arc::new(Notify::new()),
+            )
+            .await;
+        assert_eq!(outcome.status, ExecutionStatus::Offline);
+        assert_eq!(outcome.attempts, 1);
+
+        let rows = rec.0.lock().unwrap();
+        assert_eq!(rows.len(), 1, "exactly one history row expected");
+        assert_eq!(rows[0].status, ExecutionStatus::Offline);
+        assert_eq!(
+            rows[0].error_message.as_deref(),
+            Some("CRONMANAGER_OFFLINE=true")
+        );
+        assert_eq!(rows[0].http_method.as_deref(), Some("GET"));
+    }
+
+    #[tokio::test]
+    async fn offline_mode_short_circuits_shell_dispatch() {
+        let rec = Arc::new(RecordingRecorder::default());
+        let history: Arc<dyn HistoryRecorder> = rec.clone();
+        let mut bundle = ExecutorBundle::new(&cfg(), history).unwrap();
+        bundle.offline_mode = true;
+
+        let outcome = bundle
+            .dispatch(
+                &shell_job(),
+                DispatchExtras::default(),
+                Arc::new(Notify::new()),
+            )
+            .await;
+        assert_eq!(outcome.status, ExecutionStatus::Offline);
+
+        let rows = rec.0.lock().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, ExecutionStatus::Offline);
+        // Shell job → no http_* fields recorded.
+        assert!(rows[0].http_method.is_none());
+        assert!(rows[0].http_url.is_none());
+    }
+
+    /// The env-var read is a process-global side-channel; other
+    /// tests in this binary construct their own bundles via
+    /// `ExecutorBundle::new`, which reads the same var. Serialise
+    /// with a module-level mutex so the "truthy" phase of this
+    /// test can't accidentally flip a concurrent test's bundle
+    /// into offline mode. Save/restore the prior value on both
+    /// entry and exit.
+    #[test]
+    fn offline_from_env_accepts_truthy_variants() {
+        use std::sync::Mutex;
+        static ENV_GUARD: Mutex<()> = Mutex::new(());
+        let _g = ENV_GUARD.lock().unwrap();
+
+        let prior = std::env::var("CRONMANAGER_OFFLINE").ok();
+        for v in ["true", "TRUE", "1", "yes", "on", "On"] {
+            std::env::set_var("CRONMANAGER_OFFLINE", v);
+            assert!(ExecutorBundle::offline_from_env(), "{v} should be truthy");
+        }
+        for v in ["false", "0", "no", "off", "", "banana"] {
+            std::env::set_var("CRONMANAGER_OFFLINE", v);
+            assert!(!ExecutorBundle::offline_from_env(), "{v} should be falsy");
+        }
+        // Restore the pre-test value.
+        match prior {
+            Some(v) => std::env::set_var("CRONMANAGER_OFFLINE", v),
+            None => std::env::remove_var("CRONMANAGER_OFFLINE"),
         }
     }
 }

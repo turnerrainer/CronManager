@@ -90,6 +90,15 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let bundle = ExecutorBundle::new(&cfg, history)?;
+    if bundle.offline_mode {
+        // FLEET-STRONGHOLDS §9.1 / h2ck.me v1 U15 — surface the
+        // offline lever at boot so an operator glancing at the
+        // container log immediately sees why zero jobs are firing
+        // any external side effects.
+        tracing::warn!(
+            "CRONMANAGER_OFFLINE=true — every job dispatch will be short-circuited to status=OFFLINE; no HTTP or shell side effects will execute"
+        );
+    }
     let scheduler = Scheduler::new(bundle);
 
     let jobs = loader::load_all_bounded(

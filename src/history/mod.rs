@@ -41,6 +41,11 @@ pub enum ExecutionStatus {
     Retrying,
     Skipped,
     Timeout,
+    /// FLEET-STRONGHOLDS §9.1 / h2ck.me v1 U15: dispatch was
+    /// short-circuited because `CRONMANAGER_OFFLINE=true` was set.
+    /// No network / process was actually invoked. Distinguishable
+    /// from `Skipped` (time-window) in reports.
+    Offline,
 }
 
 impl ExecutionStatus {
@@ -51,6 +56,7 @@ impl ExecutionStatus {
             Self::Retrying => "RETRYING",
             Self::Skipped => "SKIPPED",
             Self::Timeout => "TIMEOUT",
+            Self::Offline => "OFFLINE",
         }
     }
 }
@@ -90,6 +96,8 @@ mod tests {
         assert_eq!(ExecutionStatus::Retrying.as_str(), "RETRYING");
         assert_eq!(ExecutionStatus::Skipped.as_str(), "SKIPPED");
         assert_eq!(ExecutionStatus::Timeout.as_str(), "TIMEOUT");
+        // h2ck.me v1 U15 — no JVM equivalent; Rust-only extension.
+        assert_eq!(ExecutionStatus::Offline.as_str(), "OFFLINE");
     }
 
     #[tokio::test]
