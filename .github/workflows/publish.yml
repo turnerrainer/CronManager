@@ -248,7 +248,7 @@ jobs:
           ref: ${{ github.event.inputs.tag || github.ref }}
           fetch-depth: 0
 
-      - name: Compute tag + prerelease flag
+      - name: Compute tag + version
         id: meta
         env:
           TAG_REF: ${{ github.event.inputs.tag || github.ref_name }}
@@ -256,14 +256,8 @@ jobs:
           set -euo pipefail
           TAG="$TAG_REF"
           VERSION="${TAG#v}"
-          if [[ "$VERSION" == *-* ]]; then
-            PRERELEASE=true
-          else
-            PRERELEASE=false
-          fi
-          echo "tag=$TAG"                 >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION"         >> "$GITHUB_OUTPUT"
-          echo "prerelease=$PRERELEASE"   >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG"           >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION"   >> "$GITHUB_OUTPUT"
 
       # Detect whether the Release already exists — matters for
       # workflow_dispatch re-runs of an already-published tag. If
@@ -320,25 +314,23 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.meta.outputs.tag }}
-          PRERELEASE: ${{ steps.meta.outputs.prerelease }}
           NOTES_FILE: ${{ steps.notes.outputs.notes_file }}
         run: |
           set -euo pipefail
-          FLAGS=()
-          if [ "$PRERELEASE" = "true" ]; then
-            FLAGS+=(--prerelease)
-          fi
-          # `--latest` is unconditional — every newly-cut release
-          # must show on the repo landing page. GitHub's
-          # `make_latest` is independent of `prerelease`, so an
-          # alpha-line project like this one still gets its most
-          # recent release surfaced in the sidebar widget.
+          # Every release is cut as a full release (never
+          # `--prerelease`). GitHub's API rejects `--latest` on a
+          # prerelease with HTTP 422 (`Latest release cannot be
+          # draft or prerelease`) — the two flags are mutually
+          # exclusive. This repo's convention (visible on
+          # v0.2.1-alpha: `isPrerelease: false`, badged "Latest")
+          # is that the version-string suffix (`-alpha` / `-beta` /
+          # `-rc.N`) conveys stability meaning; GitHub's Latest
+          # badge is the visibility signal. Both can coexist.
           gh release create "$TAG" \
             --title "$TAG" \
             --notes-file "$NOTES_FILE" \
             --verify-tag \
-            --latest \
-            "${FLAGS[@]}"
+            --latest
 
       # workflow_dispatch re-run against an already-published tag:
       # the Release object already exists but may not carry the
@@ -354,4 +346,11 @@ jobs:
         run: |
           set -euo pipefail
           echo "Promoting existing Release $TAG to Latest"
+          # `--prerelease=false` first — GitHub's API rejects
+          # `--latest` on a prerelease with HTTP 422. This unsets
+          # the flag on any Release that was mistakenly created as
+          # a prerelease by a prior pipeline version, unblocking
+          # the `--latest` promotion below. Idempotent for
+          # already-non-prerelease targets.
+          gh release edit "$TAG" --prerelease=false
           gh release edit "$TAG" --latest
