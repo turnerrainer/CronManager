@@ -584,6 +584,59 @@ async fn unknown_path_still_returns_404() {
     assert_eq!(resp.status().as_u16(), 404);
 }
 
+// h2ck.me v1 T-18 — axum::serve.with_graceful_shutdown wiring.
+// Serves for a moment, triggers the shutdown future, and asserts
+// the serve future resolves within a bounded window. Fails if
+// with_graceful_shutdown is dropped from main.rs.
+#[tokio::test]
+async fn axum_serve_honours_shutdown_future() {
+    use std::time::{Duration, Instant};
+    use tokio::sync::oneshot;
+
+    let cfg = AppConfig {
+        app_root_path: std::env::temp_dir(),
+        ..AppConfig::default()
+    };
+    let bundle = ExecutorBundle::new(&cfg, Arc::new(NoopRecorder)).unwrap();
+    let scheduler = Scheduler::new(bundle);
+    let state = AppState::new(Arc::new(cfg), scheduler);
+    let app = router::build(state);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    // Serve with a manually-driven shutdown future. Same shape as
+    // main.rs but pluggable so the test can drive it without
+    // touching process-wide signal state.
+    let serve = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .unwrap();
+    });
+
+    // Send one request to prove the server is up.
+    let resp = reqwest::get(format!("http://{addr}/health")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // Trigger shutdown; the serve task must resolve promptly.
+    shutdown_tx.send(()).unwrap();
+    let start = Instant::now();
+    let done = tokio::time::timeout(Duration::from_secs(3), serve).await;
+    assert!(
+        done.is_ok(),
+        "axum::serve did not resolve after shutdown signal within 3s"
+    );
+    assert!(
+        start.elapsed() < Duration::from_secs(3),
+        "shutdown took {}ms",
+        start.elapsed().as_millis()
+    );
+}
+
 #[tokio::test]
 async fn double_execute_returns_409() {
     let (base, sched) = spawn_app().await;

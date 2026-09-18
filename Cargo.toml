@@ -67,6 +67,10 @@ sha2 = "0.10"
 tempfile = "3"
 mockito = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }
+# `libc` — SIGTERM regression pin for src/signal.rs. Sending a
+# signal to self is the shortest path to exercising the handler
+# in a unit test without spawning a child process.
+libc = "0.2"
 
 [[bin]]
 name = "cronmanager"
