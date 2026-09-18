@@ -433,12 +433,19 @@ pub fn build(state: AppState) -> Router {
     }
     let mut router = public
         .merge(admin_routes)
-        .with_state(state)
+        .with_state(state.clone())
         // Wire `limits.max_request_bytes`. The default axum body
         // limit is 2 MiB; disable it and apply ours so the
         // operator's config wins.
         .layer(DefaultBodyLimit::disable())
         .layer(RequestBodyLimitLayer::new(body_limit))
+        // h2ck.me v1 T-15 / FLEET-STRONGHOLDS U10 — the tower_http
+        // body-limit layer emits a bare-text 413 that a JSON client
+        // can't parse. Rewrite it in place to the same `{error,
+        // message, limit}` shape our own `CronManagerError` uses.
+        // Runs OUTSIDE the body-limit layer so it also catches any
+        // future 413s emitted by other layers.
+        .layer(from_fn_with_state(state, structured_error_body_middleware))
         // FLEET-STRONGHOLDS §5.1 — defense-in-depth browser
         // headers on every response. See src/security_headers.rs
         // for the values + rationale.
@@ -664,6 +671,50 @@ async fn reload_jobs(
 // consumer inside this module.
 #[allow(dead_code)]
 fn _use_status_code(_s: StatusCode) {}
+
+/// Rewrite bare-text 413 responses (emitted by tower_http's
+/// `RequestBodyLimitLayer`) into structured JSON that matches
+/// `CronManagerError::RequestTooLarge`. Already-JSON responses
+/// (identified by `content-type: application/json`) are passed
+/// through untouched so `/execute` handlers that legitimately
+/// return `TooManyQueryParams` — also a 413 — keep their
+/// existing shape.
+///
+/// h2ck.me v1 T-15 / FLEET-STRONGHOLDS §U10 / §2.3.
+async fn structured_error_body_middleware(
+    State(state): State<AppState>,
+    req: axum::http::Request<axum::body::Body>,
+    next: Next,
+) -> Response {
+    let resp = next.run(req).await;
+    if resp.status() != StatusCode::PAYLOAD_TOO_LARGE {
+        return resp;
+    }
+    // Already JSON? Preserve.
+    if resp
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.starts_with("application/json"))
+        .unwrap_or(false)
+    {
+        return resp;
+    }
+    let limit = state.cfg.limits.max_request_bytes;
+    let (mut parts, _) = resp.into_parts();
+    let body = serde_json::json!({
+        "error": "request_too_large",
+        "message": format!("request body exceeds {limit} bytes"),
+        "limit": limit,
+    });
+    let bytes = serde_json::to_vec(&body).expect("static json shape");
+    parts.headers.insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/json"),
+    );
+    parts.headers.remove(axum::http::header::CONTENT_LENGTH);
+    Response::from_parts(parts, axum::body::Body::from(bytes))
+}
 
 #[cfg(test)]
 mod tests {

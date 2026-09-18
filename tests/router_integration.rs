@@ -504,6 +504,25 @@ async fn request_body_exceeding_limit_returns_413() {
     // tower_http's RequestBodyLimitLayer surfaces 413 for
     // Content-Length overshoot.
     assert_eq!(resp.status().as_u16(), 413);
+    // h2ck.me v1 T-15 / FLEET U10 — body must be structured JSON,
+    // not the tower_http default "length limit exceeded" text.
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        ct.starts_with("application/json"),
+        "413 content-type must be application/json, got: {ct}"
+    );
+    let body: Value = resp.json().await.expect("413 body must be valid JSON");
+    assert_eq!(body["error"], "request_too_large");
+    assert_eq!(body["limit"], 128);
+    assert!(
+        body["message"].as_str().unwrap_or("").contains("128"),
+        "413 message must name the limit: {body}"
+    );
 }
 
 #[tokio::test]
