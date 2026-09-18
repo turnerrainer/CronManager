@@ -506,6 +506,65 @@ async fn request_body_exceeding_limit_returns_413() {
     assert_eq!(resp.status().as_u16(), 413);
 }
 
+// h2ck.me v1 T-17 / RFC 7231 §7.4.1 — a request whose path
+// exists for a different method must be answered with 405
+// Method Not Allowed and an `Allow:` header naming the valid
+// method(s). Historically axum defaulted to 404 for the whole
+// path miss; MethodRouter emits the correct 405 automatically
+// when the path exists.
+#[tokio::test]
+async fn wrong_method_on_health_returns_405_with_allow_header() {
+    let (base, _sched) = spawn_app().await;
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/health"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 405, "POST /health must be 405");
+    let allow = resp
+        .headers()
+        .get("allow")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        allow.split(',').any(|m| m.trim() == "GET"),
+        "Allow header must include GET (was: {allow:?})"
+    );
+}
+
+#[tokio::test]
+async fn wrong_method_on_execute_returns_405() {
+    let (base, _sched) = spawn_app().await;
+    let resp = reqwest::Client::new()
+        .get(format!("{base}/execute/g/j"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 405);
+    let allow = resp
+        .headers()
+        .get("allow")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        allow.split(',').any(|m| m.trim() == "POST"),
+        "Allow header must include POST (was: {allow:?})"
+    );
+}
+
+#[tokio::test]
+async fn unknown_path_still_returns_404() {
+    let (base, _sched) = spawn_app().await;
+    let resp = reqwest::Client::new()
+        .get(format!("{base}/does-not-exist"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 404);
+}
+
 #[tokio::test]
 async fn double_execute_returns_409() {
     let (base, sched) = spawn_app().await;
