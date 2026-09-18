@@ -234,33 +234,54 @@ impl Scheduler {
     }
 
     /// Snapshot of currently-running instances.
+    ///
+    /// **Lock discipline (h2ck.me v1 T-5 / 2026-09-17 concurrency
+    /// mini-audit).** No method in this file may hold `running`
+    /// and `jobs` simultaneously — `reload_from()`, `stop()`,
+    /// `trigger_now()` and this function each take at most one at a
+    /// time. Snapshot `running` under its own lock (cloning what we
+    /// need), release, then lock `jobs` for the per-key state
+    /// lookup. This precludes the classic lock-order inversion
+    /// against any caller that goes the other way.
     pub fn describe_running(
         &self,
         group_filter: Option<&str>,
     ) -> BTreeMap<String, Vec<JobDescriptor>> {
-        let running = self.inner.running.lock().unwrap();
-        let jobs = self.inner.jobs.lock().unwrap();
+        // Phase 1 — snapshot every running instance under the
+        // `running` lock and drop it before touching `jobs`.
+        let snapshot: Vec<(JobKey, i64, String)> = {
+            let running = self.inner.running.lock().unwrap();
+            running
+                .iter()
+                .filter(|(key, _)| match group_filter {
+                    Some(g) => key.group == g,
+                    None => true,
+                })
+                .map(|(key, inst)| (key.clone(), inst.started_at_ms, inst.schedule.clone()))
+                .collect()
+        };
+
+        // Phase 2 — look up last_result for each snapshotted key
+        // under the `jobs` lock (state Mutex is per-job — a separate
+        // lock tier, safe to acquire under `jobs`).
         let mut out: BTreeMap<String, Vec<JobDescriptor>> = BTreeMap::new();
-        for (key, inst) in running.iter() {
-            if let Some(g) = group_filter {
-                if key.group != g {
-                    continue;
-                }
-            }
+        let jobs = self.inner.jobs.lock().unwrap();
+        for (key, started_at_ms, schedule) in snapshot {
             let last_result = jobs
-                .get(key)
+                .get(&key)
                 .and_then(|j| j.state.lock().ok().map(|s| s.last_result.clone()))
                 .unwrap_or_default();
             out.entry(key.group.clone())
                 .or_default()
                 .push(JobDescriptor {
                     name: key.name.clone(),
-                    schedule: inst.schedule.clone(),
-                    last_execution: inst.started_at_ms,
+                    schedule,
+                    last_execution: started_at_ms,
                     next_execution: 0,
                     last_result,
                 });
         }
+        drop(jobs);
         for v in out.values_mut() {
             v.sort_by(|a, b| a.name.cmp(&b.name));
         }
@@ -510,6 +531,64 @@ mod tests {
         let sched = Scheduler::new(bundle());
         sched.register(manual_http_job());
         assert!(!sched.stop(&JobKey::new("g", "n")).unwrap());
+    }
+
+    /// h2ck.me v1 T-5 regression pin: concurrent `describe_running`
+    /// + `reload_from` traffic used to hold `running` and `jobs`
+    /// in opposite orders under the old `describe_running`
+    /// implementation. Any lock-order inversion here would show up
+    /// as a deadlock within a handful of iterations. 60s is the
+    /// budget from the finding; a good fix finishes in << 1s.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn describe_running_and_reload_do_not_deadlock() {
+        use std::time::Instant;
+
+        let sched = Arc::new(Scheduler::new(bundle()));
+        sched.register(manual_http_job());
+
+        let stop_at = Instant::now() + StdDuration::from_millis(500);
+
+        // Reader loop — hammers `describe_running`, the site that
+        // previously acquired `running` then `jobs`.
+        let s_reader = sched.clone();
+        let reader = tokio::spawn(async move {
+            while Instant::now() < stop_at {
+                let _ = s_reader.describe_running(None);
+            }
+        });
+
+        // Writer loop — hammers `reload_from`, which signals under
+        // `running` then clears `jobs`.
+        let s_writer = sched.clone();
+        let writer = tokio::spawn(async move {
+            while Instant::now() < stop_at {
+                let job = crate::dsl::LoadedJob {
+                    spec: manual_http_job(),
+                    source_path: std::path::PathBuf::new(),
+                };
+                let _ = s_writer.reload_from(vec![job]);
+            }
+        });
+
+        // Third participant — `trigger_now` also touches both locks
+        // (jobs then running). Interleaving all three lanes gives
+        // the runtime every chance to trip a bad order.
+        let s_stopper = sched.clone();
+        let stopper = tokio::spawn(async move {
+            while Instant::now() < stop_at {
+                let _ = s_stopper.stop(&JobKey::new("g", "n"));
+                tokio::task::yield_now().await;
+            }
+        });
+
+        let joined = tokio::time::timeout(StdDuration::from_secs(10), async move {
+            let _ = tokio::join!(reader, writer, stopper);
+        })
+        .await;
+        assert!(
+            joined.is_ok(),
+            "concurrent describe_running + reload_from + stop deadlocked"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
