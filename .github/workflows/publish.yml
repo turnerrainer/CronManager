@@ -28,7 +28,11 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  # `contents: write` because the `create-release` job below cuts
+  # the GitHub Release once the container publish + smoke +
+  # cosign sign steps succeed. Every other permission below is
+  # unchanged from the previous shape.
+  contents: write
   packages: write
   id-token: write
   attestations: write
@@ -212,3 +216,108 @@ jobs:
             echo "Signing ${registry_image}@${DIGEST}"
             cosign sign --yes "${registry_image}@${DIGEST}"
           done
+
+  # Cut the GitHub Release once the container has been published,
+  # smoke-tested, and signed. Runs on both tag-push and
+  # workflow_dispatch paths — the latter lets an operator backfill
+  # a missing Release for an already-tagged version. If the Release
+  # already exists this job is a no-op (skip step below).
+  #
+  # Release notes come from the CHANGELOG.md section for the tag's
+  # version. The pre-release flag is set from the tag suffix (any
+  # `vX.Y.Z-*` shape → pre-release).
+  create-release:
+    runs-on: ubuntu-latest
+    needs: publish
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Compute tag + prerelease flag
+        id: meta
+        env:
+          TAG_REF: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          TAG="$TAG_REF"
+          VERSION="${TAG#v}"
+          if [[ "$VERSION" == *-* ]]; then
+            PRERELEASE=true
+          else
+            PRERELEASE=false
+          fi
+          echo "tag=$TAG"                 >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION"         >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE"   >> "$GITHUB_OUTPUT"
+
+      # Skip cleanly if the Release already exists — matters for
+      # workflow_dispatch re-runs of an already-published tag.
+      - name: Check if Release already exists
+        id: exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "already=true" >> "$GITHUB_OUTPUT"
+            echo "Release $TAG already exists — skipping"
+          else
+            echo "already=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Extract the CHANGELOG section for this version. The
+      # section runs from `## [X.Y.Z-suffix]` to the next `## [`
+      # heading (exclusive). Fails hard if the section is missing
+      # — a release without notes is a bug in the release-cutting
+      # workflow, not something to silently paper over.
+      - name: Extract release notes from CHANGELOG.md
+        if: steps.exists.outputs.already == 'false'
+        id: notes
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          NOTES_FILE="$RUNNER_TEMP/release-notes-${VERSION}.md"
+          awk -v ver="$VERSION" '
+            BEGIN { inside = 0 }
+            /^## \[/ {
+              if (inside) exit
+              if ($0 ~ "^## \\[" ver "\\]") { inside = 1; next }
+            }
+            inside { print }
+          ' CHANGELOG.md > "$NOTES_FILE"
+          # Trim leading + trailing blank lines.
+          sed -i -e '/./,$!d' -e ':a;/^\n*$/{$d;N;ba;}' "$NOTES_FILE"
+          if [ ! -s "$NOTES_FILE" ]; then
+            echo "::error::No CHANGELOG.md section found for version $VERSION"
+            echo "Expected a heading like: ## [$VERSION] - YYYY-MM-DD"
+            exit 1
+          fi
+          echo "notes_file=$NOTES_FILE" >> "$GITHUB_OUTPUT"
+          echo "--- release notes ($VERSION) ---"
+          cat "$NOTES_FILE"
+          echo "--- end release notes ---"
+
+      - name: Create GitHub Release
+        if: steps.exists.outputs.already == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          PRERELEASE: ${{ steps.meta.outputs.prerelease }}
+          NOTES_FILE: ${{ steps.notes.outputs.notes_file }}
+        run: |
+          set -euo pipefail
+          FLAGS=()
+          if [ "$PRERELEASE" = "true" ]; then
+            FLAGS+=(--prerelease)
+          fi
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes-file "$NOTES_FILE" \
+            --verify-tag \
+            "${FLAGS[@]}"
