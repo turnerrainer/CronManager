@@ -524,7 +524,9 @@ fn build_http_headers(
         }
         let valid_env = !env_name.is_empty()
             && !env_name.starts_with(|c: char| c.is_ascii_digit())
-            && env_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+            && env_name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_');
         if !valid_env {
             return Err(bad(format!(
                 "headerEnvs['{name}'] is not a valid env-var name"
@@ -766,7 +768,10 @@ mod tests {
         .unwrap_err();
         assert!(err.to_string().contains("both"), "err was: {err}");
         let err = load_http(&tmp, "  headers:\n    \"bad name\": one\n").unwrap_err();
-        assert!(err.to_string().contains("invalid header name"), "err was: {err}");
+        assert!(
+            err.to_string().contains("invalid header name"),
+            "err was: {err}"
+        );
     }
 
     #[test]
@@ -809,7 +814,7 @@ mod tests {
         assert_eq!(spec.key.name, "hc");
         assert_eq!(spec.key.group, "http-health");
         assert!(matches!(&spec.trigger, Trigger::Cron(s) if s == "0 */5 * * * ?"));
-        assert!(matches!(&spec.kind, JobKind::Http { method, url }
+        assert!(matches!(&spec.kind, JobKind::Http { method, url, .. }
             if method == "GET" && url == "https://example.com"));
         assert_eq!(spec.retry.count, 2);
         assert_eq!(spec.retry.delay, Duration::from_millis(500));
