@@ -48,6 +48,7 @@ fn manual_http_job(name: &str) -> JobSpec {
         kind: JobKind::Http {
             method: "GET".into(),
             url: "http://127.0.0.1:1/nowhere".into(),
+            headers: vec![],
         },
     }
 }

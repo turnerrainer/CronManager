@@ -254,8 +254,37 @@ Common job fields:
 | `ignoreFailures` | all | If true, absorb all-attempts-failed. Default `false`. |
 | `method` | http | One of `GET`, `POST`, `PUT`, `DELETE`, `PATCH`, `HEAD`, `OPTIONS`. Any other value fails at load. |
 | `url` | http | Full URL. |
+| `headers` | http | Optional map of extra request headers with literal values. Not for secrets. See below. |
+| `headerEnvs` | http | Optional map of header name → **env-var name**. The value is read from the process environment at each fire and never stored, logged or persisted. For service tokens. |
 | `command` | exec | Accepts EITHER a whitespace-tokenised string (JVM `Runtime.exec(String)` parity — no shell interpretation, no quoting) OR an explicit YAML list. See below. |
 | `allowedEnvs` | exec | List of env var names to export from `shell_environment` into the child process. |
+
+### `headers:` and `headerEnvs:` — extra request headers
+
+```yaml
+call_internal_api:
+  trigger: "0 0 4 ? * SUN"
+  type: http
+  method: POST
+  url: http://internal-api:8080/cron/job
+  headers:
+    X-Source: cronmanager
+  headerEnvs:
+    X-Internal-Service-Token: INTERNAL_SERVICE_TOKEN
+```
+
+- `headerEnvs` holds env-var *names* (same convention as
+  `security.per_group_token_envs`); keep secrets out of the YAML.
+- The env var must be set and a valid header value when the file
+  loads, otherwise that file is skipped with an ERROR (fail early,
+  not on the first fire). The value is re-read on every fire, so
+  rotating it needs no `/reload`.
+- Header names are case-insensitive and normalised to lower case.
+  Setting the same header in both maps is a load error.
+- `Host`, `Content-Length`, `Transfer-Encoding`, `Connection`,
+  `Upgrade`, `TE` and `Trailer` cannot be set.
+- Values from `headerEnvs` are marked sensitive in the HTTP client
+  and are not logged or written to history.
 
 ### `command:` — two forms
 

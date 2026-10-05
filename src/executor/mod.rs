@@ -109,7 +109,7 @@ impl ExecutorBundle {
         let group = spec.key.group.clone();
         let name = spec.key.name.clone();
         let (http_method_log, http_url_log): (Option<String>, Option<String>) = match &spec.kind {
-            JobKind::Http { method, url } => (Some(method.clone()), Some(url.clone())),
+            JobKind::Http { method, url, .. } => (Some(method.clone()), Some(url.clone())),
             JobKind::Exec { .. } => (None, None),
         };
 
@@ -120,7 +120,7 @@ impl ExecutorBundle {
             // Per-attempt DEBUG log — mirrors JVM
             // `HttpHelper.java:39`.
             match &spec.kind {
-                JobKind::Http { method, url } => tracing::debug!(
+                JobKind::Http { method, url, .. } => tracing::debug!(
                     "http: attempt {}/{} for {} {} ({}/{})",
                     attempt,
                     max_attempts,
@@ -140,9 +140,13 @@ impl ExecutorBundle {
             }
 
             let result = match &spec.kind {
-                JobKind::Http { method, url } => self
+                JobKind::Http {
+                    method,
+                    url,
+                    headers,
+                } => self
                     .http
-                    .execute(method, url, cancel.clone())
+                    .execute(method, url, headers, cancel.clone())
                     .await
                     .map(HttpDispatchResult::from_ok)
                     .map_err(HttpDispatchResult::from_err),
@@ -246,7 +250,7 @@ impl ExecutorBundle {
             };
 
             let (method, url) = match &spec.kind {
-                JobKind::Http { method, url } => (Some(method.clone()), Some(url.clone())),
+                JobKind::Http { method, url, .. } => (Some(method.clone()), Some(url.clone())),
                 JobKind::Exec { .. } => (None, None),
             };
 
@@ -365,7 +369,7 @@ impl ExecutorBundle {
     /// downstream reports know a fire was intentionally stubbed.
     async fn offline_stub(&self, spec: &JobSpec) -> DispatchOutcome {
         let (method, url) = match &spec.kind {
-            JobKind::Http { method, url } => (Some(method.clone()), Some(url.clone())),
+            JobKind::Http { method, url, .. } => (Some(method.clone()), Some(url.clone())),
             JobKind::Exec { .. } => (None, None),
         };
         tracing::info!(
@@ -486,6 +490,7 @@ mod tests {
                 // hit SSRF pre-flight or time out on the socket.
                 // With offline_mode the URL is never dialed.
                 url: "http://example.invalid/".into(),
+                headers: vec![],
             },
         }
     }

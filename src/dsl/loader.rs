@@ -6,7 +6,9 @@
 //! `DSL/samples/http/health-check.yaml` under `dsl_path = DSL`
 //! → group `samples-http-health-check`.
 
-use crate::dsl::{JobKey, JobKind, JobSpec, LoadedJob, RetryPolicy, TimeWindow, Trigger};
+use crate::dsl::{
+    HeaderSource, HttpHeader, JobKey, JobKind, JobSpec, LoadedJob, RetryPolicy, TimeWindow, Trigger,
+};
 use crate::error::CronManagerError;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -263,6 +265,13 @@ struct RawJob {
     // HTTP fields
     method: Option<String>,
     url: Option<String>,
+    /// Literal extra request headers (not for secrets).
+    headers: Option<std::collections::BTreeMap<String, String>>,
+    /// Header name -> env-var NAME holding the value (for secrets such as
+    /// service tokens). Mirrors `security.per_group_token_envs`: values
+    /// are env-var names, not raw secrets.
+    #[serde(default, rename = "headerEnvs")]
+    header_envs: Option<std::collections::BTreeMap<String, String>>,
 
     // Shell fields. `command:` accepts EITHER a whitespace-
     // tokenised string (JVM parity) OR an explicit YAML list
@@ -412,7 +421,17 @@ impl RawJob {
                 // at fire time (see executor/http.rs) because DNS
                 // can change between load and fire.
                 validate_http_url(&url, policy, source, &key)?;
-                JobKind::Http { method, url }
+                let headers = build_http_headers(
+                    self.headers.unwrap_or_default(),
+                    self.header_envs.unwrap_or_default(),
+                    source,
+                    &key,
+                )?;
+                JobKind::Http {
+                    method,
+                    url,
+                    headers,
+                }
             }
             "exec" => {
                 let raw_command =
@@ -450,6 +469,88 @@ impl RawJob {
 /// Reject non-http(s) schemes and literal private IPs at load
 /// time. Hostnames are re-validated at fire time (DNS TOCTOU) by
 /// the HTTP executor. See `AUDIT.md` finding H1.
+/// Headers CronManager owns; letting a DSL set them would break framing or
+/// the SSRF pre-flight (Host).
+const FORBIDDEN_HEADERS: &[&str] = &[
+    "host",
+    "content-length",
+    "transfer-encoding",
+    "connection",
+    "upgrade",
+    "te",
+    "trailer",
+];
+
+/// Validate and normalise `headers:` + `headerEnvs:`. Fails the file load
+/// on a bad header name, a forbidden header, a name set in both maps, a
+/// malformed env-var name, a literal value that is not a valid header
+/// value, or an env var that is unset / not a valid header value at load
+/// (fail early rather than on first fire). The env value itself is not
+/// kept.
+fn build_http_headers(
+    literal: std::collections::BTreeMap<String, String>,
+    envs: std::collections::BTreeMap<String, String>,
+    source: &Path,
+    key: &JobKey,
+) -> Result<Vec<HttpHeader>, CronManagerError> {
+    let bad = |reason: String| CronManagerError::InvalidJobDefinition {
+        source_path: source.display().to_string(),
+        reason: format!("job '{}' {reason}", key.name),
+    };
+    let check_name = |name: &str| -> Result<String, CronManagerError> {
+        let parsed = reqwest::header::HeaderName::from_bytes(name.as_bytes())
+            .map_err(|_| bad(format!("has invalid header name '{name}'")))?;
+        if FORBIDDEN_HEADERS.contains(&parsed.as_str()) {
+            return Err(bad(format!("may not set header '{name}'")));
+        }
+        Ok(parsed.as_str().to_string())
+    };
+    let mut out: Vec<HttpHeader> = Vec::new();
+    for (name, value) in literal {
+        let name = check_name(&name)?;
+        reqwest::header::HeaderValue::from_str(&value)
+            .map_err(|_| bad(format!("has invalid value for header '{name}'")))?;
+        out.push(HttpHeader {
+            name,
+            source: HeaderSource::Literal(value),
+        });
+    }
+    for (name, env_name) in envs {
+        let name = check_name(&name)?;
+        if out.iter().any(|h| h.name == name) {
+            return Err(bad(format!(
+                "sets header '{name}' in both headers and headerEnvs"
+            )));
+        }
+        let valid_env = !env_name.is_empty()
+            && !env_name.starts_with(|c: char| c.is_ascii_digit())
+            && env_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !valid_env {
+            return Err(bad(format!(
+                "headerEnvs['{name}'] is not a valid env-var name"
+            )));
+        }
+        match std::env::var(&env_name) {
+            Ok(v) if reqwest::header::HeaderValue::from_str(&v).is_ok() => {}
+            Ok(_) => {
+                return Err(bad(format!(
+                    "env var '{env_name}' (header '{name}') is not a valid header value"
+                )))
+            }
+            Err(_) => {
+                return Err(bad(format!(
+                    "header '{name}' needs env var '{env_name}', which is not set"
+                )))
+            }
+        }
+        out.push(HttpHeader {
+            name,
+            source: HeaderSource::Env(env_name),
+        });
+    }
+    Ok(out)
+}
+
 fn validate_http_url(
     url_str: &str,
     policy: &LoadPolicy,
@@ -604,6 +705,68 @@ mod tests {
             }
             other => panic!("expected Exec, got {other:?}"),
         }
+    }
+
+    fn load_http(tmp: &TempDir, body: &str) -> Result<Vec<LoadedJob>, CronManagerError> {
+        write(
+            tmp.path(),
+            "h/j.yaml",
+            &format!("j:\n  trigger: off\n  type: http\n  method: POST\n  url: https://example.com/\n{body}"),
+        );
+        load_file(tmp.path(), &tmp.path().join("h/j.yaml"))
+    }
+
+    #[test]
+    fn http_headers_literal_and_env_load() {
+        std::env::set_var("CM_TEST_HDR_LOAD_OK", "tok");
+        let tmp = TempDir::new().unwrap();
+        let jobs = load_http(
+            &tmp,
+            "  headers:\n    X-Static: one\n  headerEnvs:\n    X-Internal-Service-Token: CM_TEST_HDR_LOAD_OK\n",
+        )
+        .unwrap();
+        match &jobs[0].spec.kind {
+            JobKind::Http { headers, .. } => {
+                assert_eq!(headers.len(), 2);
+                assert_eq!(headers[0].name, "x-static");
+                assert_eq!(headers[0].source, HeaderSource::Literal("one".into()));
+                assert_eq!(headers[1].name, "x-internal-service-token");
+                // The secret itself is never stored, only the env-var name.
+                assert_eq!(
+                    headers[1].source,
+                    HeaderSource::Env("CM_TEST_HDR_LOAD_OK".into())
+                );
+                assert!(!format!("{:?}", jobs[0].spec).contains("tok\""));
+            }
+            other => panic!("expected Http, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn http_header_env_unset_rejected_at_load() {
+        let tmp = TempDir::new().unwrap();
+        let err = load_http(
+            &tmp,
+            "  headerEnvs:\n    X-Token: CM_TEST_HDR_DEFINITELY_UNSET\n",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("not set"), "err was: {err}");
+    }
+
+    #[test]
+    fn http_header_forbidden_and_duplicate_rejected() {
+        std::env::set_var("CM_TEST_HDR_DUP", "v");
+        let tmp = TempDir::new().unwrap();
+        let err = load_http(&tmp, "  headers:\n    Host: evil.example\n").unwrap_err();
+        assert!(err.to_string().contains("may not set"), "err was: {err}");
+        let err = load_http(
+            &tmp,
+            "  headers:\n    X-A: one\n  headerEnvs:\n    x-a: CM_TEST_HDR_DUP\n",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("both"), "err was: {err}");
+        let err = load_http(&tmp, "  headers:\n    \"bad name\": one\n").unwrap_err();
+        assert!(err.to_string().contains("invalid header name"), "err was: {err}");
     }
 
     #[test]

@@ -82,6 +82,23 @@ impl Default for RetryPolicy {
     }
 }
 
+/// One extra request header on an HTTP job.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpHeader {
+    pub name: String,
+    pub source: HeaderSource,
+}
+
+/// Where a header value comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HeaderSource {
+    /// Literal value from the DSL (`headers:`). Not for secrets.
+    Literal(String),
+    /// Name of an environment variable read at fire time (`headerEnvs:`).
+    /// The value is never stored, logged or persisted.
+    Env(String),
+}
+
 /// The two job kinds CronManager knows about. Every other
 /// dimension (schedule, window, retry) is shared via `JobSpec`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,6 +106,10 @@ pub enum JobKind {
     Http {
         method: String,
         url: String,
+        /// Extra request headers, in YAML order of `headers` then
+        /// `headerEnvs`. Secrets never live here: an `Env` source
+        /// holds only the env-var NAME and is resolved at fire time.
+        headers: Vec<HttpHeader>,
     },
     Exec {
         /// Executable + arguments as an argv vector. The DSL

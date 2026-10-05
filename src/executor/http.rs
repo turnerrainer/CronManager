@@ -10,6 +10,7 @@
 //! URL directly.
 
 use crate::config::Limits;
+use crate::dsl::{HeaderSource, HttpHeader};
 use crate::error::CronManagerError;
 use reqwest::{Client, Method};
 use std::sync::Arc;
@@ -65,6 +66,7 @@ impl HttpExecutor {
         &self,
         method: &str,
         url: &str,
+        headers: &[HttpHeader],
         cancel: Arc<Notify>,
     ) -> Result<HttpAttempt, CronManagerError> {
         let method = Method::from_bytes(method.to_uppercase().as_bytes())
@@ -79,8 +81,29 @@ impl HttpExecutor {
             self.reject_private_dns(url).await?;
         }
 
+        // Header names are logged nowhere and values never: env-sourced
+        // values are secrets. Resolved here (not at load) so rotating the
+        // env var needs no reload.
+        let mut request = self.client.request(method.clone(), url);
+        for header in headers {
+            let value = match &header.source {
+                HeaderSource::Literal(v) => v.clone(),
+                HeaderSource::Env(var) => std::env::var(var).map_err(|_| {
+                    CronManagerError::Internal(format!(
+                        "header '{}' needs env var '{var}', which is not set",
+                        header.name
+                    ))
+                })?,
+            };
+            let mut value = reqwest::header::HeaderValue::from_str(&value).map_err(|_| {
+                CronManagerError::Internal(format!("header '{}' has an invalid value", header.name))
+            })?;
+            value.set_sensitive(true);
+            request = request.header(header.name.as_str(), value);
+        }
+
         tracing::debug!("HTTP {} {}", method, url);
-        let send = self.client.request(method, url).send();
+        let send = request.send();
 
         let resp = tokio::select! {
             r = send => r.map_err(|e| self.map_send_err(e))?,
@@ -225,6 +248,7 @@ mod tests {
             .execute(
                 "GET",
                 &format!("{}/ok", server.url()),
+                &[],
                 Arc::new(Notify::new()),
             )
             .await
@@ -248,6 +272,7 @@ mod tests {
             .execute(
                 "GET",
                 &format!("{}/nope", server.url()),
+                &[],
                 Arc::new(Notify::new()),
             )
             .await
@@ -278,6 +303,7 @@ mod tests {
             .execute(
                 "GET",
                 &format!("{}/big", server.url()),
+                &[],
                 Arc::new(Notify::new()),
             )
             .await
@@ -292,7 +318,7 @@ mod tests {
     async fn unknown_method_errors_cleanly() {
         let exec = HttpExecutor::with_ssrf_policy(&Limits::default(), false).unwrap();
         let err = exec
-            .execute("FLOOP", "http://127.0.0.1:1", Arc::new(Notify::new()))
+            .execute("FLOOP", "http://127.0.0.1:1", &[], Arc::new(Notify::new()))
             .await
             .unwrap_err();
         assert!(matches!(err, CronManagerError::Internal(_)));
@@ -323,6 +349,7 @@ mod tests {
             .execute(
                 "GET",
                 &format!("{}/src", redirector.url()),
+                &[],
                 Arc::new(Notify::new()),
             )
             .await
@@ -345,6 +372,7 @@ mod tests {
             .execute(
                 "GET",
                 "http://localhost:1/whatever",
+                &[],
                 Arc::new(Notify::new()),
             )
             .await
@@ -363,5 +391,57 @@ mod tests {
         let t = truncate(s, 2);
         // Must NOT be "a\xC3" — that's invalid UTF-8.
         assert!(t.starts_with('a'));
+    }
+
+    #[tokio::test]
+    async fn literal_and_env_headers_are_sent() {
+        let mut server = mockito::Server::new_async().await;
+        let m = server
+            .mock("POST", "/h")
+            .match_header("x-static", "one")
+            .match_header("x-internal-service-token", "s3cret")
+            .with_status(200)
+            .create_async()
+            .await;
+        std::env::set_var("CM_TEST_HDR_TOKEN_SENT", "s3cret");
+        let headers = vec![
+            HttpHeader {
+                name: "x-static".into(),
+                source: HeaderSource::Literal("one".into()),
+            },
+            HttpHeader {
+                name: "x-internal-service-token".into(),
+                source: HeaderSource::Env("CM_TEST_HDR_TOKEN_SENT".into()),
+            },
+        ];
+        let exec = HttpExecutor::with_ssrf_policy(&Limits::default(), false).unwrap();
+        exec.execute(
+            "POST",
+            &format!("{}/h", server.url()),
+            &headers,
+            Arc::new(Notify::new()),
+        )
+        .await
+        .unwrap();
+        m.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn missing_header_env_at_fire_time_is_internal_error() {
+        let headers = vec![HttpHeader {
+            name: "x-token".into(),
+            source: HeaderSource::Env("CM_TEST_HDR_TOKEN_UNSET_AT_FIRE".into()),
+        }];
+        let exec = HttpExecutor::with_ssrf_policy(&Limits::default(), false).unwrap();
+        let err = exec
+            .execute(
+                "GET",
+                "http://127.0.0.1:1/x",
+                &headers,
+                Arc::new(Notify::new()),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CronManagerError::Internal(m) if !m.contains("s3cret")));
     }
 }

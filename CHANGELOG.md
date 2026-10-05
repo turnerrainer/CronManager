@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **HTTP jobs accept `headers:` and `headerEnvs:`** — extra request
+  headers. `headerEnvs` maps a header name to an env-var *name*; the
+  value is read at fire time and never stored or logged. Needed for
+  calling services behind a bearer / service-token guard, which
+  previously forced operators to wrap the call in an `exec` job.
+  Fully backward-compatible: both fields are optional.
+  `JobKind::Http` gains a `headers: Vec<HttpHeader>` field and
+  `HttpExecutor::execute` takes a `headers: &[HttpHeader]` argument.
+
 ## [0.2.2-alpha] - 2026-09-18
 
 h2ck.me v1 audit-cycle round — closes six findings surfaced in

@@ -480,6 +480,7 @@ mod tests {
             kind: JobKind::Http {
                 method: "GET".into(),
                 url: "http://127.0.0.1:1/nowhere".into(),
+                headers: vec![],
             },
         }
     }
