@@ -3,7 +3,7 @@
 YAML-driven cron scheduler for HTTP + shell jobs. Rust
 reimplementation of [buerokratt/CronManager](https://github.com/buerokratt/CronManager).
 
-**Version:** 0.2.2-alpha · **License:** Apache-2.0
+**Version:** 0.2.3-alpha · **License:** Apache-2.0
 · **Docs:** [turnerrainer.github.io/cronmanager](https://turnerrainer.github.io/cronmanager/)
 · **Images:** `docker.io/turnerrainer/cronmanager:alpha`, `ghcr.io/turnerrainer/cronmanager:alpha`
 
@@ -34,6 +34,22 @@ docker compose up -d --build
 ```
 
 ## Security posture
+
+`v0.2.3-alpha` adds one feature + CI unblockers on top of
+`v0.2.2-alpha`: HTTP jobs accept `headers:` and `headerEnvs:`
+so cron jobs can call services behind a bearer / service-token
+guard without an `exec` + `curl` wrapper (closes #39). Secrets
+stay out of YAML — `headerEnvs` holds env-var NAMES only, values
+are resolved at fire time, never logged, never persisted, with
+HTTP/2 HPACK never-indexed via `set_sensitive(true)`. Forbidden-
+header list (`host`, `content-length`, `transfer-encoding`,
+`connection`, `upgrade`, `te`, `trailer`) is case-insensitive;
+HTTP/2 pseudo-headers (`:authority`, `:method`, …) rejected; CRLF
+injection via literal or env is caught at BOTH load and fire with
+anti-leak error strings. One loader tightening: an env var set to
+empty string is now rejected at load, matching the "fail early,
+not on the first fire" contract. 266/266 tests pass (was 244 on
+0.2.2-alpha; +22 header coverage).
 
 `v0.2.2-alpha` closes the h2ck.me v1 audit-cycle carried over
 from the v2 round: scheduler lock-order isolation (T-5), a
@@ -100,7 +116,7 @@ config in [`CLAUDE.md` § Best-practice configs](./CLAUDE.md#best-practice-confi
   assistant or a new developer landing cold. Covers breaking
   changes since `0.1.0-alpha.3` AND the additional shape /
   posture changes introduced in `0.2.0-alpha` / `0.2.1-alpha` /
-  `0.2.2-alpha`, how to spot a
+  `0.2.2-alpha` / `0.2.3-alpha`, how to spot a
   broken config, how to fix common problems, and best-practice
   config baselines (loopback dev, public/internet, JVM-compat
   port).

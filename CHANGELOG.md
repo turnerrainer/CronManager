@@ -8,16 +8,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3-alpha] - 2026-10-14
+
+One headline feature + two CI unblockers on top of `0.2.2-alpha`.
+Not required by upgraders; new field defaults preserve existing
+behaviour. 266 tests pass (was 244 on 0.2.2-alpha; +22 header
+coverage).
+
 ### Added
 
-- **HTTP jobs accept `headers:` and `headerEnvs:`** — extra request
-  headers. `headerEnvs` maps a header name to an env-var *name*; the
-  value is read at fire time and never stored or logged. Needed for
-  calling services behind a bearer / service-token guard, which
-  previously forced operators to wrap the call in an `exec` job.
-  Fully backward-compatible: both fields are optional.
-  `JobKind::Http` gains a `headers: Vec<HttpHeader>` field and
-  `HttpExecutor::execute` takes a `headers: &[HttpHeader]` argument.
+- **HTTP jobs accept `headers:` and `headerEnvs:`** (closes #39,
+  via PR #46 superseding #40). Two optional YAML fields on
+  `type: http` jobs:
+  ```yaml
+  headers:
+    X-Source: cronmanager
+  headerEnvs:
+    X-Internal-Service-Token: INTERNAL_SERVICE_TOKEN
+  ```
+  `headerEnvs` holds env-var NAMES (same convention as
+  `security.per_group_token_envs`); values are resolved at fire
+  time, never stored in `JobKind`, never logged, never persisted,
+  and marked sensitive on the HTTP/2 wire via
+  `HeaderValue::set_sensitive(true)`. Rotating the backing env
+  needs no `/reload`.
+
+  Load-time validation refuses: invalid header name, forbidden
+  framing header (`host`, `content-length`, `transfer-encoding`,
+  `connection`, `upgrade`, `te`, `trailer` — case-insensitive),
+  HTTP/2 pseudo-headers (`:authority`, `:method`, `:path`,
+  `:scheme`, `:status`), same header set in both maps, malformed
+  env-var name (empty, leading digit, non-alnum/_), literal value
+  that isn't a valid header value, env var unset / empty / not a
+  valid header value. Attacker-controlled CRLF-injection payloads
+  in env values are refused at both load AND fire with anti-leak
+  error strings. One file failing header validation is skipped
+  with ERROR; sibling files load normally (per the per-file
+  skip-and-warn rule).
+
+  In-crate shape change: `JobKind::Http` gains
+  `headers: Vec<HttpHeader>`; `HttpExecutor::execute` takes a
+  `headers: &[HttpHeader]` argument. No external semver impact —
+  CronManager ships as a binary, not a library.
+
+### Changed
+
+- **Empty env values are now rejected at `headerEnvs:` load**
+  (new loudness). An empty `Authorization:` or service-token
+  header is a 100% config bug — some upstreams accept it as
+  "no auth" and return 200. Fails loudly at load, not silently
+  at fire. See PR #46.
+
+### Security
+
+- **CI unblocker — ignore RUSTSEC-2024-0449** (closes #41, via
+  PR #45). `unsafe-libyaml` is unmaintained (upstream archived
+  2024-03-25). Pulled in transitively via `serde_yaml_ng`; the
+  advisory itself states "No safe upgrade is available". YAML is
+  only read from operator-controlled files, never over the wire —
+  exposure is nil. Mirrored in `.cargo/audit.toml` and `deny.toml`
+  with 2027-01-31 review date.
+
+### Build
+
+- **CI unblocker — bump `async-trait` 0.1.91 → 0.1.92** (closes
+  #43, via PR #45). Rust 1.99.0 stabilised a new
+  `clippy::double_must_use` lint that fires inside the proc-macro
+  expansion of `async-trait 0.1.91`. The 0.1.92 release resolves
+  the lint in generated code (upstream #303). Patch bump via
+  `Cargo.lock` only; `Cargo.toml` spec `async-trait = "0.1"`
+  already permits it.
 
 ## [0.2.2-alpha] - 2026-09-18
 

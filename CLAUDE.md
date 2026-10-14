@@ -6,18 +6,19 @@ is, which behaviours changed recently, how to spot a broken
 config, how to fix one, and which config shape is the current
 best-practice baseline.
 
-**Current release**: `0.2.2-alpha` (see `VERSION`, `Cargo.toml`,
+**Current release**: `0.2.3-alpha` (see `VERSION`, `Cargo.toml`,
 `CHANGELOG.md`). Branch of record for active work: `dev` — this is
 also the default branch on GitHub. There is no `main` branch yet;
 alphas are cut as git tags on `dev` (`v0.1.4-alpha` → `fe1f517`,
 `v0.2.0-alpha` → `7d72714` [**yanked** for CVE remediation],
 `v0.2.1-alpha` supersedes v0.2.0-alpha with a Dockerfile
 `apt-get upgrade` on the runtime layer, `v0.2.2-alpha` closes the
-h2ck.me v1 audit-cycle on top of v0.2.1-alpha) and published as
-GitHub Releases (`v0.1.4-alpha` marked Latest / stable,
-`v0.2.1-alpha` + `v0.2.2-alpha` marked Pre-release). `main` will
-be created and tagged only when the project reaches prod-ready
-state, targeted at `v1.0.0`.
+h2ck.me v1 audit-cycle on top of v0.2.1-alpha, `v0.2.3-alpha` adds
+the HTTP job `headers:` + `headerEnvs:` DSL feature plus two CI
+unblockers) and published as GitHub Releases (`v0.1.4-alpha` marked
+Latest / stable, `v0.2.1-alpha` + `v0.2.2-alpha` + `v0.2.3-alpha`
+marked Pre-release). `main` will be created and tagged only when
+the project reaches prod-ready state, targeted at `v1.0.0`.
 **Never push a `main` branch or move code there without explicit
 maintainer approval.**
 
@@ -245,6 +246,90 @@ below adds these substrings on top of the `0.1.4-alpha` set:
 |---|---|---|
 | `REFUSING TO START in Production: N weak/default credential(s) detected` | Env-safety §11.1: admin token / DB password matched a weak pattern or is too short. | Rotate the affected env var(s) to a strong value; the error names each redacted (`01****ef`). Or set `APP_ENV=dev` to permit dev defaults locally. |
 | `REFUSING TO START in Production: N unsafe posture item(s)` | Env-safety §11.2: `admin.trust_network=true` / `block_private_networks=false` / `allow_dangerous_env_overrides=true` in a non-dev env. | Flip each named flag to its safe default. |
+
+## Breaking / non-obvious changes in `0.2.3-alpha` (since `0.2.2-alpha`)
+
+One headline DSL feature + two CI unblockers. Not required by
+upgraders; new field defaults preserve existing behaviour.
+
+22. **⚠️ HTTP jobs accept `headers:` and `headerEnvs:`** (closes
+    #39, PR #46 supersedes #40). Two optional YAML fields on
+    `type: http` jobs. Literal values go in `headers:`;
+    secret-bearing values go in `headerEnvs:` as env-var *names*
+    (same convention as `security.per_group_token_envs`,
+    `admin.bearer_token_env`, `database.password_env`). Example:
+    ```yaml
+    call_internal_api:
+      trigger: "0 0 4 ? * SUN"
+      type: http
+      method: POST
+      url: http://internal-api:8080/cron/job
+      headers:
+        X-Source: cronmanager
+      headerEnvs:
+        X-Internal-Service-Token: INTERNAL_SERVICE_TOKEN
+    ```
+    - `headerEnvs` values are resolved by the executor on EVERY
+      fire (not cached) — rotating the backing env var needs no
+      `/reload`.
+    - Values are never stored in `JobKind`, never logged, never
+      persisted to history. Marked sensitive via
+      `HeaderValue::set_sensitive(true)` (HTTP/2 HPACK
+      never-indexed; also suppressed from reqwest Debug output).
+    - **In-crate shape change** (binary — no external semver
+      impact): `JobKind::Http` gains `headers: Vec<HttpHeader>`
+      where `HttpHeader { name: String, source: HeaderSource }`
+      and `HeaderSource` is `Literal(String) | Env(String)`.
+      `HttpExecutor::execute` takes a new `headers: &[HttpHeader]`
+      argument. Any in-tree test constructing `JobKind::Http`
+      directly needs the extra field — pattern-match sites
+      destructure `{ method, url, .. }` where they don't need
+      headers.
+    - Load-time validation (file is skipped with ERROR, sibling
+      files continue — per the per-file skip-and-warn rule):
+      invalid header name, forbidden framing header (`host`,
+      `content-length`, `transfer-encoding`, `connection`,
+      `upgrade`, `te`, `trailer` — case-insensitive), HTTP/2
+      pseudo-headers (`:authority`, `:method`, `:path`,
+      `:scheme`, `:status`), same header set in both maps,
+      malformed env-var name (empty, leading digit, non-alnum/_),
+      literal value that isn't a valid header value, env var
+      unset / empty / not a valid header value. CRLF-injection
+      payloads in literal or env values are refused at BOTH load
+      and fire. Error strings include the env-var NAME (for ops
+      triage) but NEVER the resolved value (anti-leak).
+
+23. **Empty env values rejected at `headerEnvs:` load** (PR #46,
+    bundled with #22). An env var set to `""` (empty string)
+    used to pass the load check — the current value only had to
+    be a syntactically valid header value, and RFC 9110 §5.5
+    allows empty values. In practice an empty bearer / service
+    token is a 100% config bug: some upstreams accept it as
+    "no auth" and return 200, the worst-possible outcome. The
+    loader now fails loudly at load with:
+    ```
+    env var 'X' (header 'Y') is empty or not a valid header value
+    ```
+    This applies only to `headerEnvs:` — literal `headers:` with
+    empty values still load (anti-regression against the RFC
+    guarantee), covered by
+    `http_header_literal_empty_value_accepted`.
+
+24. **CI unblocker — ignore RUSTSEC-2024-0449** (closes #41, PR
+    #45). `unsafe-libyaml` (via `serde_yaml_ng`) was archived
+    upstream 2024-03-25; the advisory itself states "No safe
+    upgrade is available". Mirrored in `.cargo/audit.toml` and
+    `deny.toml`, review date 2027-01-31. YAML is only read from
+    operator-controlled files (`dsl_path`, `cronmanager.yaml`),
+    never over the wire — exposure is nil.
+
+25. **CI unblocker — bump `async-trait` 0.1.91 → 0.1.92** (closes
+    #43, PR #45). Rust 1.99.0 shipped a new
+    `clippy::double_must_use` lint that fired inside
+    `#[async_trait]`'s proc-macro expansion. Fixed upstream in
+    async-trait #303. Patch bump via `Cargo.lock` only; the
+    `Cargo.toml` spec `async-trait = "0.1"` already permitted
+    it.
 
 ## Breaking / non-obvious changes in `0.2.2-alpha` (since `0.2.1-alpha`)
 
