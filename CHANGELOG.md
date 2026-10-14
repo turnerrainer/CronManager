@@ -637,7 +637,8 @@ per the Buerostack `DEV-REQUIREMENTS.md` ruleset.
   `HANDOFF.md`, `SECURITY.md`, `STANDARDS.md`, `NOTICE`,
   `VERSION`, `deny.toml`, `.cargo/audit.toml`, `book/`, `tasks/`.
 
-[Unreleased]: https://github.com/turnerrainer/cronmanager/compare/v0.2.2-alpha...HEAD
+[Unreleased]: https://github.com/turnerrainer/cronmanager/compare/v0.2.3-alpha...HEAD
+[0.2.3-alpha]: https://github.com/turnerrainer/cronmanager/releases/tag/v0.2.3-alpha
 [0.2.2-alpha]: https://github.com/turnerrainer/cronmanager/releases/tag/v0.2.2-alpha
 [0.2.1-alpha]: https://github.com/turnerrainer/cronmanager/releases/tag/v0.2.1-alpha
 [0.2.0-alpha]: https://github.com/turnerrainer/cronmanager/releases/tag/v0.2.0-alpha
