@@ -77,7 +77,38 @@ impl ShellExecutor {
         cmd.stderr(std::process::Stdio::piped());
 
         tracing::debug!("shell: {} {:?}", program, &argv[1..]);
-        let mut child = cmd.spawn().map_err(CronManagerError::Io)?;
+        // ETXTBSY retry: on Linux, execve of a script whose inode is in
+        // a dirty-metadata window briefly returns ETXTBSY ("Text file
+        // busy"). Happens in CI under parallel-test write+exec load, and
+        // can happen in prod if a configuration-management tool (chef /
+        // ansible) rewrites the script right before the cron fires.
+        // Short retry closes the window at zero cost in the happy path.
+        let mut child = {
+            let mut spawned: Option<tokio::process::Child> = None;
+            for attempt in 0..5 {
+                match cmd.spawn() {
+                    Ok(c) => {
+                        spawned = Some(c);
+                        break;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < 4 => {
+                        tracing::warn!(
+                            program = %program,
+                            attempt,
+                            "shell: execve returned ETXTBSY — retrying after brief backoff"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    }
+                    Err(e) => return Err(CronManagerError::Io(e)),
+                }
+            }
+            spawned.ok_or_else(|| {
+                CronManagerError::Io(std::io::Error::new(
+                    std::io::ErrorKind::ExecutableFileBusy,
+                    "shell: spawn retried 5× on ETXTBSY and still failed",
+                ))
+            })?
+        };
         let stdout = child
             .stdout
             .take()
