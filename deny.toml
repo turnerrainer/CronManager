@@ -26,6 +26,9 @@ ignore = [
     # RUSTSEC-2023-0071 — mirrored from .cargo/audit.toml. See
     # that file for the full rationale + review date.
     { id = "RUSTSEC-2023-0071", reason = "Marvin sidechannel in rsa via sqlx-postgres SCRAM. No upstream fix. Review 2027-01-31." },
+    # RUSTSEC-2024-0449 — mirrored from .cargo/audit.toml. See
+    # that file for the full rationale + review date.
+    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml unmaintained (archived 2024-03-25), via serde_yaml_ng. Upstream advisory: 'No safe upgrade is available'. YAML is read from operator-controlled files only, never over the wire. Review 2027-01-31." },
 ]
 
 # -----------------------------------------------------------------

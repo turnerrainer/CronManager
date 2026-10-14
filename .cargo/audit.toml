@@ -32,4 +32,32 @@ ignore = [
     # Review: 2027-01-31 — re-check whether the `rsa` crate or
     # sqlx has cut a fix. If neither, extend with a new note.
     "RUSTSEC-2023-0071",
+
+    # RUSTSEC-2024-0449 — `unsafe-libyaml` is unmaintained. The
+    # upstream repo was archived on 2024-03-25 and the advisory
+    # states "No safe upgrade is available". Pulled in transitively
+    # by `serde_yaml_ng v0.10` (the only maintained serde-compatible
+    # YAML parser on crates.io; `serde_yaml` itself is deprecated and
+    # uses the same `unsafe-libyaml` under the hood).
+    #
+    # Exposure model:
+    #   * CronManager only parses YAML it loads from disk at boot
+    #     and `/reload` (operator-controlled files in `dsl_path`
+    #     and `cronmanager.yaml`). It does not accept YAML over
+    #     the wire. An attacker who can write to those paths
+    #     already owns the process.
+    #   * This is an unmaintained warning, not a vulnerability.
+    #     No CVE / exploit is attached — `cargo audit --deny
+    #     warnings` promotes it to a hard-fail by policy.
+    #
+    # Migration path: the advisory suggests `saphyr` / `serde-saphyr`.
+    # Those are new crates and the migration touches both the
+    # config loader (src/config.rs) and the DSL loader
+    # (src/dsl/loader.rs) with non-trivial risk around anchors,
+    # aliases, and map ordering. Not an audit-cycle fix.
+    #
+    # Review: 2027-01-31 — re-check whether `serde-saphyr` has
+    # stabilised or whether `unsafe-libyaml` has been un-archived
+    # or forked by a maintained upstream.
+    "RUSTSEC-2024-0449",
 ]
