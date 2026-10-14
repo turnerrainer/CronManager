@@ -562,6 +562,173 @@ mod tests {
         assert!(rows[0].http_url.is_none());
     }
 
+    /// Offline mode must NEVER resolve env vars for `headerEnvs`.
+    /// Rationale: an offline fire is a dry-run — if an operator sets
+    /// `CRONMANAGER_OFFLINE=true` precisely because the real secrets
+    /// aren't provisioned yet, we can't fail the fire on a missing
+    /// env. This test constructs a job that would 100% fail at fire
+    /// time if offline were ever bypassed (headerEnv pointing at an
+    /// unset var) and asserts the dispatch still records OFFLINE
+    /// cleanly.
+    #[tokio::test]
+    async fn offline_mode_does_not_resolve_header_envs() {
+        let rec = Arc::new(RecordingRecorder::default());
+        let history: Arc<dyn HistoryRecorder> = rec.clone();
+        let mut bundle = ExecutorBundle::new(&cfg(), history).unwrap();
+        bundle.offline_mode = true;
+
+        // Make sure the env is unset, even against a stray parallel
+        // test that may have touched a sibling name.
+        std::env::remove_var("CM_TEST_OFFLINE_HDR_UNSET");
+
+        let spec = JobSpec {
+            key: JobKey::new("g", "http-with-env"),
+            trigger: Trigger::Manual,
+            window: TimeWindow::default(),
+            retry: RetryPolicy::default(),
+            kind: JobKind::Http {
+                method: "GET".into(),
+                url: "http://example.invalid/".into(),
+                headers: vec![crate::dsl::HttpHeader {
+                    name: "x-token".into(),
+                    source: crate::dsl::HeaderSource::Env("CM_TEST_OFFLINE_HDR_UNSET".into()),
+                }],
+            },
+        };
+        let outcome = bundle
+            .dispatch(&spec, DispatchExtras::default(), Arc::new(Notify::new()))
+            .await;
+        assert_eq!(outcome.status, ExecutionStatus::Offline);
+        let rows = rec.0.lock().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, ExecutionStatus::Offline);
+    }
+
+    /// A successful HTTP fire with an env-sourced header must leave
+    /// NO trace of the resolved value in the persisted history row —
+    /// not in `response_body`, not in `error_message`, not in the
+    /// Debug formatting of the whole entry. Guards against a future
+    /// refactor that accidentally captures request headers into the
+    /// history record.
+    #[tokio::test]
+    async fn history_entry_has_no_header_env_value() {
+        use crate::dsl::{HeaderSource, HttpHeader};
+
+        let mut server = mockito::Server::new_async().await;
+        let m = server
+            .mock("GET", "/leak-check")
+            .match_header("x-token", "sup3r-s3cr3t-xyz")
+            .with_status(200)
+            .with_body("ok")
+            .create_async()
+            .await;
+
+        std::env::set_var("CM_TEST_HDR_HIST_LEAK", "sup3r-s3cr3t-xyz");
+        let rec = Arc::new(RecordingRecorder::default());
+        let history: Arc<dyn HistoryRecorder> = rec.clone();
+        let mut cfg = cfg();
+        // Keep the executor on the real HTTP path (not offline).
+        cfg.security.block_private_networks = false;
+        let bundle = ExecutorBundle::new(&cfg, history).unwrap();
+
+        let spec = JobSpec {
+            key: JobKey::new("g", "hist-leak-check"),
+            trigger: Trigger::Manual,
+            window: TimeWindow::default(),
+            retry: RetryPolicy::default(),
+            kind: JobKind::Http {
+                method: "GET".into(),
+                url: format!("{}/leak-check", server.url()),
+                headers: vec![HttpHeader {
+                    name: "x-token".into(),
+                    source: HeaderSource::Env("CM_TEST_HDR_HIST_LEAK".into()),
+                }],
+            },
+        };
+        let outcome = bundle
+            .dispatch(&spec, DispatchExtras::default(), Arc::new(Notify::new()))
+            .await;
+        assert_eq!(outcome.status, ExecutionStatus::Success);
+        m.assert_async().await;
+
+        let rows = rec.0.lock().unwrap();
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        let dbg = format!("{row:?}");
+        for leak in ["sup3r-s3cr3t-xyz", "sup3r", "s3cr3t"] {
+            assert!(
+                row.response_body
+                    .as_deref()
+                    .map(|b| !b.contains(leak))
+                    .unwrap_or(true),
+                "response_body leaked `{leak}`: {:?}",
+                row.response_body
+            );
+            assert!(
+                row.error_message
+                    .as_deref()
+                    .map(|e| !e.contains(leak))
+                    .unwrap_or(true),
+                "error_message leaked `{leak}`: {:?}",
+                row.error_message
+            );
+            assert!(!dbg.contains(leak), "HistoryEntry Debug leaked `{leak}`");
+        }
+    }
+
+    /// A FAILED HTTP fire (env unset at fire time) must still produce
+    /// a history row whose error field names the env var but not any
+    /// previously-cached value. Companion to the success-path test
+    /// above.
+    #[tokio::test]
+    async fn history_entry_on_fire_time_env_failure_has_no_value() {
+        use crate::dsl::{HeaderSource, HttpHeader};
+
+        let rec = Arc::new(RecordingRecorder::default());
+        let history: Arc<dyn HistoryRecorder> = rec.clone();
+        let mut cfg = cfg();
+        cfg.security.block_private_networks = false;
+        // Avoid retry noise.
+        let bundle = ExecutorBundle::new(&cfg, history).unwrap();
+
+        std::env::remove_var("CM_TEST_HDR_HIST_FAIL");
+        let spec = JobSpec {
+            key: JobKey::new("g", "hist-fail"),
+            trigger: Trigger::Manual,
+            window: TimeWindow::default(),
+            retry: RetryPolicy {
+                count: 0,
+                ..RetryPolicy::default()
+            },
+            kind: JobKind::Http {
+                method: "GET".into(),
+                // Routable (127.0.0.1:1) would hit a connection
+                // refused; we never get there because the env check
+                // fires first.
+                url: "http://127.0.0.1:1/x".into(),
+                headers: vec![HttpHeader {
+                    name: "x-token".into(),
+                    source: HeaderSource::Env("CM_TEST_HDR_HIST_FAIL".into()),
+                }],
+            },
+        };
+        let _ = bundle
+            .dispatch(&spec, DispatchExtras::default(), Arc::new(Notify::new()))
+            .await;
+        let rows = rec.0.lock().unwrap();
+        assert!(!rows.is_empty(), "expected at least one history row");
+        let last = rows.last().unwrap();
+        let dbg = format!("{last:?}");
+        // Env NAME is OK to persist.
+        if let Some(e) = &last.error_message {
+            assert!(e.contains("CM_TEST_HDR_HIST_FAIL"), "name missing: {e}");
+        }
+        // No stale value anywhere.
+        for leak in ["sup3r-s3cr3t", "s3cr3t-xyz", "v1", "v2"] {
+            assert!(!dbg.contains(leak), "stale value leaked: {dbg}");
+        }
+    }
+
     /// The env-var read is a process-global side-channel; other
     /// tests in this binary construct their own bundles via
     /// `ExecutorBundle::new`, which reads the same var. Serialise

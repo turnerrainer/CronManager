@@ -444,4 +444,226 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, CronManagerError::Internal(m) if !m.contains("s3cret")));
     }
+
+    /// Pin the documented rotation promise: an env-sourced header is
+    /// resolved on EVERY fire, so rotating the backing secret needs no
+    /// `/reload`. If this ever regressed (e.g. a well-meaning cache
+    /// layer added for performance), rotations would silently keep
+    /// sending the old secret.
+    #[tokio::test]
+    async fn env_rotates_between_fires_new_value_sent() {
+        let mut server = mockito::Server::new_async().await;
+        let m_v1 = server
+            .mock("GET", "/r")
+            .match_header("x-token", "v1")
+            .with_status(200)
+            .expect(1)
+            .create_async()
+            .await;
+        let m_v2 = server
+            .mock("GET", "/r")
+            .match_header("x-token", "v2")
+            .with_status(200)
+            .expect(1)
+            .create_async()
+            .await;
+        let headers = vec![HttpHeader {
+            name: "x-token".into(),
+            source: HeaderSource::Env("CM_TEST_HDR_ROTATE".into()),
+        }];
+        let exec = HttpExecutor::with_ssrf_policy(&Limits::default(), false).unwrap();
+
+        std::env::set_var("CM_TEST_HDR_ROTATE", "v1");
+        exec.execute(
+            "GET",
+            &format!("{}/r", server.url()),
+            &headers,
+            Arc::new(Notify::new()),
+        )
+        .await
+        .unwrap();
+
+        std::env::set_var("CM_TEST_HDR_ROTATE", "v2");
+        exec.execute(
+            "GET",
+            &format!("{}/r", server.url()),
+            &headers,
+            Arc::new(Notify::new()),
+        )
+        .await
+        .unwrap();
+
+        m_v1.assert_async().await;
+        m_v2.assert_async().await;
+    }
+
+    /// Env was valid at load but mutated to a CRLF-smuggling payload
+    /// before fire time (TOCTOU on the operator / secret store). The
+    /// executor must reject it with an Internal error and never let
+    /// the second header line reach the wire. Error must NOT echo the
+    /// attacker-controlled value.
+    #[tokio::test]
+    async fn env_crlf_injection_at_fire_time_rejected() {
+        // No mockito "match any request" assertion library-side; we
+        // instead point at a server whose single mock accepts ONLY a
+        // request with the smuggled header, and assert `.expect(0)`.
+        let mut server = mockito::Server::new_async().await;
+        let smuggle_sentinel = server
+            .mock("GET", "/x")
+            .match_header("x-injected", "evil")
+            .with_status(200)
+            .expect(0)
+            .create_async()
+            .await;
+
+        std::env::set_var("CM_TEST_HDR_INJECT_AT_FIRE", "legit\r\nX-Injected: evil");
+        let headers = vec![HttpHeader {
+            name: "x-token".into(),
+            source: HeaderSource::Env("CM_TEST_HDR_INJECT_AT_FIRE".into()),
+        }];
+        let exec = HttpExecutor::with_ssrf_policy(&Limits::default(), false).unwrap();
+        let err = exec
+            .execute(
+                "GET",
+                &format!("{}/x", server.url()),
+                &headers,
+                Arc::new(Notify::new()),
+            )
+            .await
+            .unwrap_err();
+
+        match err {
+            CronManagerError::Internal(ref m) => {
+                assert!(m.contains("invalid value"), "err was: {m}");
+                // Attacker-controlled bytes must not reach logs.
+                assert!(!m.contains("X-Injected"), "injected name leaked: {m}");
+                assert!(!m.contains("evil"), "injected value leaked: {m}");
+                assert!(!m.contains("legit"), "env value leaked: {m}");
+            }
+            other => panic!("expected Internal, got {other:?}"),
+        }
+        // Belt + braces: the smuggled request was never issued.
+        smuggle_sentinel.assert_async().await;
+    }
+
+    /// Env got unset between load and fire. Error must be `Internal`
+    /// with the env NAME (ops signal) but never any residual value
+    /// from a previous fire, and the request must never leave the
+    /// executor. Companion to
+    /// `missing_header_env_at_fire_time_is_internal_error` with an
+    /// explicit mockito `.expect(0)` wire-level assertion.
+    #[tokio::test]
+    async fn env_unset_at_fire_time_does_not_hit_the_wire() {
+        let mut server = mockito::Server::new_async().await;
+        let any_hit = server
+            .mock("GET", "/y")
+            .with_status(200)
+            .expect(0)
+            .create_async()
+            .await;
+        let headers = vec![HttpHeader {
+            name: "x-token".into(),
+            source: HeaderSource::Env("CM_TEST_HDR_UNSET_WIRE".into()),
+        }];
+        // Make sure it's unset, even if a stray parallel test
+        // happens to touch the name — unique prefix makes this
+        // defensive-only.
+        std::env::remove_var("CM_TEST_HDR_UNSET_WIRE");
+        let exec = HttpExecutor::with_ssrf_policy(&Limits::default(), false).unwrap();
+        let err = exec
+            .execute(
+                "GET",
+                &format!("{}/y", server.url()),
+                &headers,
+                Arc::new(Notify::new()),
+            )
+            .await
+            .unwrap_err();
+        match err {
+            CronManagerError::Internal(ref m) => {
+                assert!(m.contains("not set"), "err was: {m}");
+                assert!(m.contains("CM_TEST_HDR_UNSET_WIRE"), "err was: {m}");
+            }
+            other => panic!("expected Internal, got {other:?}"),
+        }
+        any_hit.assert_async().await;
+    }
+
+    /// Pentest: an env-sourced value containing a C0 control byte
+    /// (here DEL 0x7F — the OS forbids NUL in env values, so DEL is
+    /// the next-smallest HeaderValue-invalid byte that `set_var`
+    /// still accepts) must be refused at fire time. Reqwest's
+    /// HeaderValue rejects anything outside RFC 9110 field-vchar;
+    /// this test pins that the executor DOES validate at fire time,
+    /// not just at load.
+    #[tokio::test]
+    async fn env_control_byte_at_fire_time_rejected() {
+        std::env::set_var("CM_TEST_HDR_CTRL_AT_FIRE", "has\x7Fdel");
+        let headers = vec![HttpHeader {
+            name: "x-token".into(),
+            source: HeaderSource::Env("CM_TEST_HDR_CTRL_AT_FIRE".into()),
+        }];
+        let exec = HttpExecutor::with_ssrf_policy(&Limits::default(), false).unwrap();
+        let err = exec
+            .execute(
+                "GET",
+                "http://127.0.0.1:1/x",
+                &headers,
+                Arc::new(Notify::new()),
+            )
+            .await
+            .unwrap_err();
+        match err {
+            CronManagerError::Internal(ref m) => {
+                assert!(m.contains("invalid value"), "err was: {m}");
+                // No part of the raw value in the error.
+                assert!(!m.contains("has\x7F"), "env value leaked: {m}");
+                assert!(!m.contains("del"), "env value leaked: {m}");
+            }
+            other => panic!("expected Internal, got {other:?}"),
+        }
+    }
+
+    /// Pin anti-leak at the Debug level too: no part of the resolved
+    /// env value appears in the Debug formatting of the error wrapper
+    /// that propagates up through the executor stack. Belt-and-braces
+    /// against a future `#[derive(Debug)]` on a struct that happens to
+    /// capture the resolved value. Uses CRLF as the "invalid byte" so
+    /// `set_var` accepts it (OS rejects NUL).
+    #[tokio::test]
+    async fn env_value_never_in_internal_error_debug() {
+        std::env::set_var(
+            "CM_TEST_HDR_DEBUG_LEAK",
+            "s3cret-stuff-xyz\r\nX-Smuggled: 1",
+        );
+        let headers = vec![HttpHeader {
+            name: "x-token".into(),
+            source: HeaderSource::Env("CM_TEST_HDR_DEBUG_LEAK".into()),
+        }];
+        let exec = HttpExecutor::with_ssrf_policy(&Limits::default(), false).unwrap();
+        let err = exec
+            .execute(
+                "GET",
+                "http://127.0.0.1:1/x",
+                &headers,
+                Arc::new(Notify::new()),
+            )
+            .await
+            .unwrap_err();
+        let debug = format!("{err:?}");
+        let display = err.to_string();
+        for leak in [
+            "s3cret",
+            "s3cret-stuff-xyz",
+            "stuff-xyz",
+            "X-Smuggled",
+            "X-Smuggled: 1",
+        ] {
+            assert!(!debug.contains(leak), "Debug leaked `{leak}`: {debug}");
+            assert!(
+                !display.contains(leak),
+                "Display leaked `{leak}`: {display}"
+            );
+        }
+    }
 }

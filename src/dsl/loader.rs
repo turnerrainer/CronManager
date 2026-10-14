@@ -532,11 +532,18 @@ fn build_http_headers(
                 "headerEnvs['{name}'] is not a valid env-var name"
             )));
         }
+        // Empty values are rejected together with syntactically-invalid
+        // ones: an empty `Authorization:` or `X-Service-Token:` is a
+        // config bug 100% of the time and must fail LOUDLY at load,
+        // never silently at fire. The error message deliberately omits
+        // the env VALUE (only the NAME) so a bad secret can't leak into
+        // boot logs. See pentest tests `http_header_env_set_but_empty_rejected`
+        // and `http_header_env_crlf_injection_rejected_at_load`.
         match std::env::var(&env_name) {
-            Ok(v) if reqwest::header::HeaderValue::from_str(&v).is_ok() => {}
+            Ok(v) if !v.is_empty() && reqwest::header::HeaderValue::from_str(&v).is_ok() => {}
             Ok(_) => {
                 return Err(bad(format!(
-                    "env var '{env_name}' (header '{name}') is not a valid header value"
+                    "env var '{env_name}' (header '{name}') is empty or not a valid header value"
                 )))
             }
             Err(_) => {
@@ -772,6 +779,265 @@ mod tests {
             err.to_string().contains("invalid header name"),
             "err was: {err}"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // Load-time coverage — the three validator branches not pinned by
+    // the three tests above. See CLAUDE.md "DSL header fields" for the
+    // full validator contract. These are branch-coverage tests, not
+    // pentest tests (those come next).
+    // ------------------------------------------------------------------
+
+    /// Literal header values with CR/LF/NUL/control bytes trip the
+    /// `HeaderValue::from_str` branch in `build_http_headers`. This is
+    /// the ONLY defense between a hand-written YAML and the HTTP wire —
+    /// if it ever slipped, a job author could inject a second request
+    /// header line directly.
+    #[test]
+    fn http_header_literal_value_with_control_bytes_rejected() {
+        let tmp = TempDir::new().unwrap();
+
+        // CR / LF — classical HTTP header injection vector.
+        let err = load_http(
+            &tmp,
+            "  headers:\n    X-A: \"legit\\r\\nX-Injected: evil\"\n",
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("invalid value for header"),
+            "err was: {err}"
+        );
+
+        // NUL — not valid in HTTP header values.
+        let err = load_http(&tmp, "  headers:\n    X-A: \"has\\0nul\"\n").unwrap_err();
+        assert!(
+            err.to_string().contains("invalid value for header"),
+            "err was: {err}"
+        );
+
+        // DEL (0x7F) and other C0 controls.
+        let err = load_http(&tmp, "  headers:\n    X-A: \"has\\x01control\"\n").unwrap_err();
+        assert!(
+            err.to_string().contains("invalid value for header"),
+            "err was: {err}"
+        );
+    }
+
+    /// Env-var-name sanity: four distinct shapes that must all be
+    /// rejected (empty, leading digit, dash, dot, space). Covers the
+    /// `valid_env` guard in `build_http_headers`.
+    #[test]
+    fn http_header_env_var_name_malformed_rejected() {
+        let tmp = TempDir::new().unwrap();
+        for bad_name in [
+            "\"\"",             // empty string
+            "1STARTS_WITH_DIG", // leading digit
+            "HAS-DASH",         // dash is not alnum/_
+            "HAS.DOT",          // dot is not alnum/_
+            "\"HAS SPACE\"",    // space is not alnum/_
+        ] {
+            let yaml = format!("  headerEnvs:\n    X-Token: {bad_name}\n");
+            let err = load_http(&tmp, &yaml).unwrap_err();
+            assert!(
+                err.to_string().contains("not a valid env-var name"),
+                "env-var name '{bad_name}' should be rejected, got: {err}"
+            );
+        }
+    }
+
+    /// Env is set but its CURRENT value isn't a valid header value.
+    /// Covers the `Ok(_)` arm (not `Ok(v) if valid`) in
+    /// `build_http_headers`. Also pins the error-string contract:
+    /// name of the env var is included (for ops), value is NOT.
+    #[test]
+    fn http_header_env_value_invalid_rejected_at_load() {
+        std::env::set_var(
+            "CM_TEST_HDR_ENV_VAL_CRLF",
+            "secret-stuff\r\nX-Injected: evil",
+        );
+        let tmp = TempDir::new().unwrap();
+        let err = load_http(
+            &tmp,
+            "  headerEnvs:\n    X-Token: CM_TEST_HDR_ENV_VAL_CRLF\n",
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("not a valid header value"), "err was: {msg}");
+        // Name goes in — operator needs it to debug.
+        assert!(msg.contains("CM_TEST_HDR_ENV_VAL_CRLF"), "err was: {msg}");
+        // Value never — would leak the (invalid, possibly real) secret.
+        assert!(!msg.contains("secret-stuff"), "env value leaked: {msg}");
+        assert!(!msg.contains("X-Injected"), "env value leaked: {msg}");
+    }
+
+    // ------------------------------------------------------------------
+    // Pentest-worthy coverage. Pointed at the specific abuse paths
+    // the FORBIDDEN_HEADERS list + HeaderName / HeaderValue validators
+    // are designed to defend against. If any of these ever regress,
+    // a job author (or anyone who can land a DSL file) can smuggle a
+    // request, defeat the SSRF pre-flight, or forge an upstream
+    // identity.
+    // ------------------------------------------------------------------
+
+    /// FORBIDDEN_HEADERS compares against the lower-cased canonical
+    /// name reqwest returns, so every case variation must be caught.
+    /// If the comparison ever regressed to a case-sensitive raw string
+    /// match, `HoSt:` would smuggle past the pre-flight.
+    #[test]
+    fn http_header_forbidden_case_insensitive_variants() {
+        let tmp = TempDir::new().unwrap();
+        for name in [
+            "HOST",
+            "HoSt",
+            "host",
+            "CONNECTION",
+            "CoNnEcTiOn",
+            "CONTENT-LENGTH",
+            "content-length",
+            "Content-Length",
+            "TRANSFER-ENCODING",
+            "Transfer-Encoding",
+            "transfer-ENCODING",
+            "TE",
+            "te",
+            "Te",
+            "TRAILER",
+            "trailer",
+            "UPGRADE",
+            "upgrade",
+            "Upgrade",
+        ] {
+            let yaml = format!("  headers:\n    {name}: whatever\n");
+            let err = load_http(&tmp, &yaml).unwrap_err();
+            assert!(
+                err.to_string().contains("may not set"),
+                "forbidden header '{name}' should be rejected, got: {err}"
+            );
+        }
+    }
+
+    /// Header NAMES containing CR / LF / NUL / space / tab must be
+    /// rejected by `HeaderName::from_bytes`. Smuggling a `\r\n` into
+    /// a header name would otherwise produce a second header line on
+    /// the wire. This is the counterpart to
+    /// `http_header_literal_value_with_control_bytes_rejected` on the
+    /// name side.
+    #[test]
+    fn http_header_name_with_control_or_whitespace_rejected() {
+        let tmp = TempDir::new().unwrap();
+        for name in [
+            "\"X-\\r\\n-A\"",     // CR+LF inside name
+            "\"\\r\\nHost\"",     // CR+LF prefix (tries to smuggle Host)
+            "\"X-\\0-A\"",        // NUL byte
+            "\"X-Has Space\"",    // space
+            "\"X-Has\\tTab\"",    // tab
+            "\"X-Has\\x01Ctrl\"", // C0 control
+        ] {
+            let yaml = format!("  headers:\n    {name}: v\n");
+            let err = load_http(&tmp, &yaml).unwrap_err();
+            assert!(
+                err.to_string().contains("invalid header name"),
+                "name '{name}' should be rejected, got: {err}"
+            );
+        }
+    }
+
+    /// HTTP/2 pseudo-headers (`:authority`, `:method`, `:path`,
+    /// `:scheme`) are protocol-internal and are never set by
+    /// application headers. `HeaderName::from_bytes` rejects any name
+    /// starting with `:` as invalid; this pins that behaviour so
+    /// nobody can smuggle an alternate authority past the SSRF
+    /// pre-flight.
+    #[test]
+    fn http_header_name_pseudo_header_rejected() {
+        let tmp = TempDir::new().unwrap();
+        for name in [":authority", ":method", ":path", ":scheme", ":status"] {
+            let yaml = format!("  headers:\n    \"{name}\": v\n");
+            let err = load_http(&tmp, &yaml).unwrap_err();
+            assert!(
+                err.to_string().contains("invalid header name"),
+                "pseudo-header '{name}' should be rejected, got: {err}"
+            );
+        }
+    }
+
+    /// Pentest: an attacker who controls an env var (e.g. a leaked
+    /// deployment-config file) could try to inject a second header
+    /// line via `secret\r\nX-Forwarded-For: 1.1.1.1`. The load-time
+    /// `HeaderValue::from_str` check must refuse this and the error
+    /// must NOT echo the attacker-controlled value into logs.
+    #[test]
+    fn http_header_env_crlf_injection_rejected_at_load() {
+        std::env::set_var(
+            "CM_TEST_HDR_CRLF_INJECT",
+            "tok\r\nX-Forwarded-For: 203.0.113.9\r\nAuthorization: Bearer stolen",
+        );
+        let tmp = TempDir::new().unwrap();
+        let err = load_http(
+            &tmp,
+            "  headerEnvs:\n    X-Token: CM_TEST_HDR_CRLF_INJECT\n",
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("not a valid header value"), "err was: {msg}");
+        // The injected name AND the injected value must not reach logs.
+        assert!(
+            !msg.contains("X-Forwarded-For"),
+            "injected name leaked: {msg}"
+        );
+        assert!(!msg.contains("203.0.113.9"), "injected value leaked: {msg}");
+        assert!(!msg.contains("Bearer stolen"), "stolen auth leaked: {msg}");
+        // The env-var NAME is OK to log (operator needs it).
+        assert!(msg.contains("CM_TEST_HDR_CRLF_INJECT"), "err was: {msg}");
+    }
+
+    /// An operator with `INTERNAL_SERVICE_TOKEN=` (empty) must fail
+    /// LOUDLY at load, not silently at fire. An empty bearer is a
+    /// 100% config bug; some upstreams accept it as "no auth" and
+    /// return 200 — the worst possible outcome. See the sibling
+    /// `build_http_headers` branch that rejects `Ok("")`.
+    #[test]
+    fn http_header_env_set_but_empty_rejected_at_load() {
+        std::env::set_var("CM_TEST_HDR_EMPTY", "");
+        let tmp = TempDir::new().unwrap();
+        let err = load_http(&tmp, "  headerEnvs:\n    X-Token: CM_TEST_HDR_EMPTY\n").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("empty or not a valid header value"),
+            "err was: {msg}"
+        );
+        // Clean up for sibling tests.
+        std::env::remove_var("CM_TEST_HDR_EMPTY");
+    }
+
+    /// RFC 9110 §5.5: empty header values are valid. A literal
+    /// `X-Trace-Id: ""` must load so an operator can intentionally
+    /// send one. (This is NOT a pentest guard — it's an
+    /// anti-regression for the empty-env rule above, which must
+    /// apply only to `headerEnvs`, not `headers`.)
+    #[test]
+    fn http_header_literal_empty_value_accepted() {
+        let tmp = TempDir::new().unwrap();
+        let jobs = load_http(&tmp, "  headers:\n    X-A: \"\"\n").unwrap();
+        match &jobs[0].spec.kind {
+            JobKind::Http { headers, .. } => {
+                assert_eq!(headers.len(), 1);
+                assert_eq!(headers[0].name, "x-a");
+                assert_eq!(headers[0].source, HeaderSource::Literal(String::new()));
+            }
+            other => panic!("expected Http, got {other:?}"),
+        }
+    }
+
+    /// Pin: an error raised against ONE bad header must still include
+    /// the job key for ops triage. This catches a future refactor that
+    /// turns the structured error into a bare `anyhow!("…")` and loses
+    /// the key, which has happened in sister projects.
+    #[test]
+    fn http_header_error_includes_job_name() {
+        let tmp = TempDir::new().unwrap();
+        let err = load_http(&tmp, "  headers:\n    Host: evil.example\n").unwrap_err();
+        assert!(err.to_string().contains("job 'j'"), "err was: {err}");
     }
 
     #[test]
