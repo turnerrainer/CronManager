@@ -206,7 +206,20 @@ mod tests {
     fn tempscript(body: &str) -> (tempfile::TempDir, String) {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("script.sh");
-        std::fs::write(&path, body).unwrap();
+        // Explicit open-write-fsync-close before chmod+exec. `fs::write`
+        // alone drops the fd on return, but Linux can still trip
+        // ETXTBSY ("Text file busy") on an immediate execve of a
+        // just-written script under heavy parallel-test load — the
+        // inode's dirty metadata hasn't been flushed yet. `sync_all`
+        // flushes both data and metadata before the fd is dropped,
+        // which plugs the window reliably across ext4 / tmpfs on both
+        // amd64 and arm64 runners.
+        use std::io::Write;
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(body.as_bytes()).unwrap();
+            f.sync_all().unwrap();
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
