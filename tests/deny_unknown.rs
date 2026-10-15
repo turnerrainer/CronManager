@@ -79,6 +79,51 @@ fn config_allowed_origins_accepts_jvm_comma_string() {
     );
 }
 
+#[test]
+fn config_allowed_private_hosts_snake_case_parses() {
+    let yaml = concat!(
+        "security:\n",
+        "  allowed_private_hosts:\n",
+        "    - ruuter-internal\n",
+        "    - svc.ns.svc.cluster.local\n",
+    );
+    let cfg: AppConfig = serde_yaml_ng::from_str(yaml).unwrap();
+    assert_eq!(
+        cfg.security.allowed_private_hosts,
+        vec!["ruuter-internal", "svc.ns.svc.cluster.local"]
+    );
+}
+
+#[test]
+fn config_allowed_private_hosts_camel_case_alias_parses() {
+    // JVM-compat shape: an operator pasting a camelCase port should
+    // get the same binding as the Rust-native snake_case form.
+    let yaml = concat!("security:\n", "  allowedPrivateHosts: [ruuter-internal]\n",);
+    let cfg: AppConfig = serde_yaml_ng::from_str(yaml).unwrap();
+    assert_eq!(cfg.security.allowed_private_hosts, vec!["ruuter-internal"]);
+}
+
+#[test]
+fn config_allowed_private_hosts_default_is_empty() {
+    // No `security:` block → empty vec, no behavioural change
+    // for existing deployments. Pins the backward-compat promise.
+    let cfg: AppConfig = serde_yaml_ng::from_str("port: 8080\n").unwrap();
+    assert!(cfg.security.allowed_private_hosts.is_empty());
+}
+
+#[test]
+fn config_allowed_private_hosts_singular_typo_rejected() {
+    // The whole point of `deny_unknown_fields` is to catch typos
+    // like these — the operator meant `allowed_private_hosts` and
+    // without this guard the entry would silently be dropped.
+    let yaml = concat!("security:\n", "  allowed_private_host: [ruuter-internal]\n",);
+    let err = serde_yaml_ng::from_str::<AppConfig>(yaml).unwrap_err();
+    assert!(
+        err.to_string().contains("allowed_private_host"),
+        "err: {err}"
+    );
+}
+
 // ---------- DSL schema ----------
 
 fn write_dsl(root: &std::path::Path, rel: &str, body: &str) {

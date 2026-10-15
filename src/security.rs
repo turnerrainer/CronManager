@@ -138,17 +138,26 @@ pub fn is_always_blocked(ip: IpAddr) -> bool {
 
 /// Normalise one `security.allowed_private_hosts` entry for exact
 /// matching against a URL host: trimmed, lowercased, trailing dot
-/// dropped. Returns `None` for entries that can never match a
-/// hostname — empty, IP literals (literal private IPs are refused at
+/// dropped. Returns `None` for entries that can never match a URL
+/// host — empty, IP literals (literal private IPs are refused at
 /// DSL load; use `block_private_networks=false` for those), or
-/// anything carrying a scheme, port, path, userinfo or whitespace.
+/// anything carrying a character that can't appear in an RFC 1035
+/// hostname. Permitted chars: ASCII letters, digits, hyphen, dot,
+/// underscore (the latter for k8s / DNS SRV compatibility). This
+/// is strictly tighter than URL hostname grammar — a URL whose host
+/// contains anything outside this set can never match a listed
+/// entry anyway (URL parsing would reject it earlier), but the
+/// strict check catches operator footguns at config time: `*`,
+/// `*.svc.cluster.local`, `svc?x`, and other "clever" entries
+/// return None loudly instead of being silently inert.
 pub fn normalize_allowed_host(entry: &str) -> Option<String> {
     let host = entry.trim().trim_end_matches('.').to_ascii_lowercase();
-    if host.is_empty()
-        || host.parse::<IpAddr>().is_ok()
-        || host
-            .chars()
-            .any(|c| matches!(c, ':' | '/' | '@' | '[' | ']') || c.is_whitespace())
+    if host.is_empty() || host.parse::<IpAddr>().is_ok() {
+        return None;
+    }
+    if !host
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_'))
     {
         return None;
     }
@@ -554,6 +563,150 @@ mod tests {
         assert!(!is_always_blocked(IpAddr::V6(Ipv6Addr::new(
             0xfd00, 0xec2, 0, 0, 0, 0, 0, 0x253
         ))));
+    }
+
+    /// Load-bearing invariant for `allowed_private_hosts`:
+    /// `is_always_blocked ⊆ is_private_or_local`. Reason: the SSRF
+    /// pre-flight uses `is_private_or_local` for unlisted hosts and
+    /// `is_always_blocked` for listed ones; if there were an IP in
+    /// `is_always_blocked` but NOT in `is_private_or_local`, an
+    /// UNLISTED host that resolved to it would silently sail past
+    /// the pre-flight. Pinning here so a future split (e.g. moving
+    /// multicast out of `is_private_or_local`) can't quietly open
+    /// that hole.
+    #[test]
+    fn always_blocked_is_subset_of_private_or_local() {
+        // Hand-rolled corpus covering every branch of
+        // `is_always_blocked`: IPv4 link-local, unspecified,
+        // multicast, broadcast; IPv6 link-local, metadata, mapped,
+        // unspecified, multicast. If any of these is NOT in
+        // `is_private_or_local` the allowlist has a hole.
+        let corpus: &[IpAddr] = &[
+            // IPv4
+            IpAddr::V4(Ipv4Addr::new(169, 254, 0, 1)),
+            IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254)),
+            IpAddr::V4(Ipv4Addr::new(169, 254, 170, 2)), // ECS task-role creds
+            IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+            IpAddr::V4(Ipv4Addr::new(224, 0, 0, 1)),
+            IpAddr::V4(Ipv4Addr::new(239, 255, 255, 250)), // SSDP
+            IpAddr::V4(Ipv4Addr::new(255, 255, 255, 255)),
+            // IPv6
+            IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+            IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)),
+            IpAddr::V6(Ipv6Addr::new(0xfebf, 0, 0, 0, 0, 0, 0, 1)), // last fe80::/10
+            IpAddr::V6(Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1)),
+            IpAddr::V6(Ipv6Addr::new(0xfd00, 0xec2, 0, 0, 0, 0, 0, 0x254)),
+            // IPv4-mapped IPv6 of IMDS
+            IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0xa9fe, 0xa9fe)),
+        ];
+        for ip in corpus {
+            assert!(
+                is_always_blocked(*ip),
+                "{ip} should be always_blocked (corpus bug)"
+            );
+            assert!(
+                is_private_or_local(*ip),
+                "INVARIANT VIOLATED: {ip} is always_blocked but not private_or_local — \
+                 the SSRF pre-flight would let an UNLISTED host through to this IP."
+            );
+        }
+    }
+
+    /// Pin the inverse too: there exist IPs that are `private_or_local`
+    /// but NOT `always_blocked` — those are exactly the ones the
+    /// allowlist legitimately exposes (RFC 1918, loopback, ULA
+    /// excluding fd00:ec2::254, CGNAT). Without this, a future
+    /// over-aggressive bump of `is_always_blocked` would quietly
+    /// turn the allowlist into a no-op.
+    #[test]
+    fn allowlist_actually_opens_something() {
+        let exposable: &[IpAddr] = &[
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),    // RFC 1918
+            IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1)),  // RFC 1918
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), // RFC 1918
+            IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),   // loopback
+            IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1)),  // CGNAT
+            IpAddr::V6(Ipv6Addr::new(0xfd12, 0, 0, 0, 0, 0, 0, 1)), // ULA (not IMDS)
+            IpAddr::V6(Ipv6Addr::LOCALHOST),
+        ];
+        for ip in exposable {
+            assert!(is_private_or_local(*ip), "{ip} should be private_or_local");
+            assert!(
+                !is_always_blocked(*ip),
+                "{ip} should NOT be always_blocked — \
+                 if it is, the allowlist can never reach it"
+            );
+        }
+    }
+
+    /// Pentest-angle normalization: entries that look clever but
+    /// cannot be a plain RFC 1035 hostname must return None (so
+    /// they can never shadow a URL match AND the operator gets a
+    /// loud boot WARN instead of silent inertness). Covers
+    /// wildcards, bare dots, control bytes, whitespace, query /
+    /// fragment / path markers, and percent-encoded payloads.
+    #[test]
+    fn normalize_allowed_host_rejects_sneaky_variants() {
+        for bad in [
+            "*",                      // bare wildcard
+            "*.svc.cluster.local",    // wildcard glob
+            ".",                      // bare dot → empty after trim
+            "..",                     // only dots
+            "svc\0.local",            // NUL byte
+            "svc\x7Flocal",           // DEL
+            "svc\u{00A0}local",       // non-ASCII whitespace (NBSP)
+            "svc\tlocal",             // tab
+            "ruuter-internal/..",     // path segment
+            "ruuter-internal?x",      // query marker
+            "ruuter-internal#frag",   // fragment marker
+            "ruuter-internal%2Eevil", // percent-encoded dot
+            "ruuter+internal",        // '+' is not valid
+            "ruuter&internal",        // '&' is not valid
+        ] {
+            assert!(
+                normalize_allowed_host(bad).is_none(),
+                "entry {bad:?} should be rejected"
+            );
+        }
+    }
+
+    /// Non-ASCII whitespace coverage: a hostname with a non-breaking
+    /// space must be rejected. Pins that the RFC 1035 character
+    /// filter actually bites — if the filter ever drifted to
+    /// `is_whitespace()` the ASCII-only subset would miss these.
+    #[test]
+    fn normalize_allowed_host_rejects_unicode_whitespace() {
+        for ws in ['\u{00A0}', '\u{2028}', '\u{3000}'] {
+            let bad = format!("ruuter{ws}internal");
+            assert!(
+                normalize_allowed_host(&bad).is_none(),
+                "entry with U+{:04X} should be rejected: {bad:?}",
+                ws as u32
+            );
+        }
+    }
+
+    /// Positive coverage for the characters that DO belong in a
+    /// hostname: letters, digits, hyphen, dot, underscore.
+    /// Underscore is explicit because it's an occasional point of
+    /// confusion (strict RFC 1035 forbids it; RFC 2782 SRV and k8s
+    /// Service / Pod names allow it; the pragmatic middle ground is
+    /// to accept).
+    #[test]
+    fn normalize_allowed_host_accepts_rfc1035_plus_underscore() {
+        for good in [
+            "ruuter-internal",
+            "svc1.ns.svc.cluster.local",
+            "service_v2.ns.svc.cluster.local",
+            "a",
+            "a-b-c-1-2-3",
+            "_tcp.svc.local", // SRV record style
+        ] {
+            assert!(
+                normalize_allowed_host(good).is_some(),
+                "entry {good:?} should be accepted"
+            );
+        }
     }
 
     #[test]

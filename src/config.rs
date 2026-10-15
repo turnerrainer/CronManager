@@ -542,6 +542,15 @@ impl AppConfig {
                     "security: allowed_private_hosts entry {entry:?} is not a plain hostname and is ignored"
                 );
             }
+            // Operator footgun: if the whole SSRF guard is off, the
+            // allowlist does nothing. Flag it loudly — the operator
+            // most likely wanted the allowlist *instead of* flipping
+            // the guard off, not alongside it.
+            if !self.security.block_private_networks {
+                tracing::warn!(
+                    "security: allowed_private_hosts is set but block_private_networks=false — the allowlist is inert because every private address is already permitted. Remove one or the other."
+                );
+            }
         }
         if self.security.allow_dangerous_env_overrides {
             tracing::warn!(
