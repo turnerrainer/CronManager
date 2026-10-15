@@ -8,22 +8,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4-alpha] - 2026-10-15
+
+One feature on top of `0.2.3-alpha`. Not required by upgraders;
+empty default = no behaviour change. 289 tests pass (was 275 on
+0.2.3-alpha; +14 invariant / pentest / end-to-end coverage).
+
 ### Added
 
-- **`security.allowed_private_hosts`** — per-hostname exception to the
-  SSRF pre-flight. HTTP jobs whose URL host is listed may resolve to
+- **`security.allowed_private_hosts`** (closes #49, via PR #51
+  superseding #50) — per-hostname exception to the SSRF
+  pre-flight. HTTP jobs whose URL host is listed may resolve to
   RFC 1918 / loopback / CGNAT / ULA addresses while
-  `block_private_networks` stays `true`, so cluster-internal targets
-  (e.g. `http://ruuter-internal:8080`) work under a non-dev
+  `block_private_networks` stays `true`, so cluster-internal
+  targets (e.g. `http://ruuter-internal:8080`,
+  `http://my-svc.ns.svc.cluster.local`) work under a non-dev
   `APP_ENV`. Previously the only option was
-  `block_private_networks: false`, which `env_safety` refuses outside
-  `dev`. Exact, case-insensitive match (trailing dot folded); no
-  wildcards. Link-local and cloud metadata addresses
-  (`169.254.0.0/16`, `fe80::/10`, `fd00:ec2::254`), unspecified,
-  multicast and broadcast stay refused even for listed hosts. IP
-  literals and entries with a scheme / port / path are ignored, with a
-  boot WARN and a doctor WEAK; valid entries show as a doctor INFO.
-  Empty list (the default) = no behaviour change.
+  `block_private_networks: false`, which `env_safety` refuses
+  outside `dev` — the operator either lost every cluster-internal
+  job or lost the posture gates.
+
+  Exact, case-insensitive match (trailing dot folded); no
+  wildcards, no suffix matching. Permitted entry characters are
+  RFC 1035 hostname chars (ASCII letters/digits/hyphen/dot) plus
+  underscore for k8s / DNS SRV compatibility. Entries that can
+  never match a URL host (`*`, `*.svc.cluster.local`, `svc?x`,
+  IP literals, scheme/port/path markers, whitespace, control
+  bytes) are ignored at normalisation with a doctor WEAK + boot
+  WARN. Link-local and cloud metadata addresses
+  (`169.254.0.0/16`, `fe80::/10`, `fd00:ec2::254`,
+  `::ffff:169.254.169.254`), unspecified, multicast, and
+  broadcast stay refused even for listed hosts.
+
+  Config field accepts both snake_case (`allowed_private_hosts`)
+  and camelCase (`allowedPrivateHosts`) via `#[serde(alias)]`;
+  `deny_unknown_fields` catches typos like
+  `allowed_private_host` (singular). `cronmanager doctor` lists
+  valid entries as INFO.
+
+### Changed
+
+- **Boot WARN when `allowed_private_hosts` is set alongside
+  `block_private_networks: false`.** The allowlist is inert in
+  that combination because every private address is already
+  permitted; the operator most likely wanted the allowlist
+  *instead of* the kill switch, not alongside it. See PR #51.
+
+- **Error message on SSRF-refused HTTP job** now points at
+  `security.allowed_private_hosts` instead of suggesting
+  `block_private_networks=false`. CLAUDE.md troubleshooting
+  updated to lead with the allowlist and demote the kill switch
+  to a dev-only last resort.
 
 ## [0.2.3-alpha] - 2026-10-14
 
@@ -654,7 +689,8 @@ per the Buerostack `DEV-REQUIREMENTS.md` ruleset.
   `HANDOFF.md`, `SECURITY.md`, `STANDARDS.md`, `NOTICE`,
   `VERSION`, `deny.toml`, `.cargo/audit.toml`, `book/`, `tasks/`.
 
-[Unreleased]: https://github.com/turnerrainer/cronmanager/compare/v0.2.3-alpha...HEAD
+[Unreleased]: https://github.com/turnerrainer/cronmanager/compare/v0.2.4-alpha...HEAD
+[0.2.4-alpha]: https://github.com/turnerrainer/cronmanager/releases/tag/v0.2.4-alpha
 [0.2.3-alpha]: https://github.com/turnerrainer/cronmanager/releases/tag/v0.2.3-alpha
 [0.2.2-alpha]: https://github.com/turnerrainer/cronmanager/releases/tag/v0.2.2-alpha
 [0.2.1-alpha]: https://github.com/turnerrainer/cronmanager/releases/tag/v0.2.1-alpha

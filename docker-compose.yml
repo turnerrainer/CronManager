@@ -24,7 +24,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: cronmanager:0.2.3-alpha
+    image: cronmanager:0.2.4-alpha
     container_name: cronmanager
     ports:
       - "9010:8080"
