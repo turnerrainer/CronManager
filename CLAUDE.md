@@ -6,7 +6,7 @@ is, which behaviours changed recently, how to spot a broken
 config, how to fix one, and which config shape is the current
 best-practice baseline.
 
-**Current release**: `0.2.3-alpha` (see `VERSION`, `Cargo.toml`,
+**Current release**: `0.2.4-alpha` (see `VERSION`, `Cargo.toml`,
 `CHANGELOG.md`). Branch of record for active work: `dev` — this is
 also the default branch on GitHub. There is no `main` branch yet;
 alphas are cut as git tags on `dev` (`v0.1.4-alpha` → `fe1f517`,
@@ -15,10 +15,13 @@ alphas are cut as git tags on `dev` (`v0.1.4-alpha` → `fe1f517`,
 `apt-get upgrade` on the runtime layer, `v0.2.2-alpha` closes the
 h2ck.me v1 audit-cycle on top of v0.2.1-alpha, `v0.2.3-alpha` adds
 the HTTP job `headers:` + `headerEnvs:` DSL feature plus two CI
-unblockers) and published as GitHub Releases (`v0.1.4-alpha` marked
-Latest / stable, `v0.2.1-alpha` + `v0.2.2-alpha` + `v0.2.3-alpha`
-marked Pre-release). `main` will be created and tagged only when
-the project reaches prod-ready state, targeted at `v1.0.0`.
+unblockers, `v0.2.4-alpha` adds `security.allowed_private_hosts`
+so cluster-internal targets work under non-dev `APP_ENV`) and
+published as GitHub Releases (`v0.1.4-alpha` marked Latest /
+stable, `v0.2.1-alpha` + `v0.2.2-alpha` + `v0.2.3-alpha` +
+`v0.2.4-alpha` marked Pre-release). `main` will be created and
+tagged only when the project reaches prod-ready state, targeted
+at `v1.0.0`.
 **Never push a `main` branch or move code there without explicit
 maintainer approval.**
 
@@ -246,6 +249,67 @@ below adds these substrings on top of the `0.1.4-alpha` set:
 |---|---|---|
 | `REFUSING TO START in Production: N weak/default credential(s) detected` | Env-safety §11.1: admin token / DB password matched a weak pattern or is too short. | Rotate the affected env var(s) to a strong value; the error names each redacted (`01****ef`). Or set `APP_ENV=dev` to permit dev defaults locally. |
 | `REFUSING TO START in Production: N unsafe posture item(s)` | Env-safety §11.2: `admin.trust_network=true` / `block_private_networks=false` / `allow_dangerous_env_overrides=true` in a non-dev env. | Flip each named flag to its safe default. |
+
+## Breaking / non-obvious changes in `0.2.4-alpha` (since `0.2.3-alpha`)
+
+One security-posture feature. Not required by upgraders; the new
+field defaults to the empty list, which preserves pre-existing
+behaviour.
+
+26. **⚠️ `security.allowed_private_hosts`** (closes #49, PR #51
+    supersedes #50). Per-hostname exception to the SSRF
+    pre-flight so HTTP jobs can reach cluster-internal services
+    on RFC 1918 / loopback / ULA addresses while
+    `block_private_networks` stays `true` — env_safety still
+    boots under `APP_ENV=production`. Example:
+    ```yaml
+    security:
+      block_private_networks: true
+      allowed_private_hosts:
+        - ruuter-internal
+        - my-svc.ns.svc.cluster.local
+    ```
+    - **Match rules**: exact, case-insensitive, trailing dot
+      folded. No wildcards, no suffix matching (`*.svc.cluster.local`
+      is rejected — list each target). Permitted entry chars are
+      RFC 1035 hostname chars (ASCII letters/digits/hyphen/dot)
+      plus underscore for k8s / DNS SRV compatibility.
+    - **Always refused even for listed hosts**:
+      `169.254.0.0/16` (cloud metadata — AWS/GCE/Azure IMDS),
+      `fe80::/10` (IPv6 link-local), `fd00:ec2::254` (AWS IPv6
+      IMDS), unspecified, multicast, broadcast, and the IPv4-mapped
+      IPv6 forms of each. Pinned by the test
+      `always_blocked_is_subset_of_private_or_local` which
+      enforces the load-bearing invariant `is_always_blocked ⊆
+      is_private_or_local`.
+    - **Dropped at config load with a doctor WEAK**: IP literals,
+      entries with a scheme / port / path / userinfo, wildcards
+      (`*`, `*.svc.cluster.local`), bare dots, control bytes,
+      whitespace, non-RFC-1035 characters. Dropped entries emit
+      a boot WARN naming the raw entry.
+    - **Config aliases**: `allowed_private_hosts` (snake_case),
+      `allowedPrivateHosts` (camelCase JVM-compat).
+      `deny_unknown_fields` still catches typos — a singular
+      `allowed_private_host:` is a hard load error.
+
+27. **Boot WARN when `allowed_private_hosts` is set alongside
+    `block_private_networks: false`** (PR #51). The allowlist is
+    inert in that combination because every private address is
+    already permitted. The operator most likely wanted the
+    allowlist *instead of* the kill switch; the WARN names both
+    knobs and tells them to pick one.
+
+28. **Error message on SSRF-refused HTTP job changed** (PR #51).
+    The refusal now points at `security.allowed_private_hosts`
+    instead of `block_private_networks=false`:
+    ```
+    hostname 'ruuter-internal' resolves to non-routable IP
+      10.1.2.3 (SSRF pre-flight); list the host in
+      security.allowed_private_hosts to allow
+    ```
+    The troubleshooting section below is updated to match —
+    allowlist first, kill switch demoted to a dev-only last
+    resort.
 
 ## Breaking / non-obvious changes in `0.2.3-alpha` (since `0.2.2-alpha`)
 
