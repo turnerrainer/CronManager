@@ -280,6 +280,24 @@ pub fn run(cfg: &AppConfig, env: Environment) -> DoctorReport {
             "block_private_networks=false — HTTP jobs can reach cloud metadata endpoints",
         ));
     }
+    if !cfg.security.allowed_private_hosts.is_empty() {
+        let (valid, invalid) = cfg.security.split_allowed_private_hosts();
+        if !valid.is_empty() {
+            findings.push(Finding::info(
+                "security.allowed_private_hosts",
+                format!(
+                    "private-address access allowed for: {} (link-local / metadata still refused)",
+                    valid.join(", ")
+                ),
+            ));
+        }
+        for entry in invalid {
+            findings.push(Finding::weak(
+                "security.allowed_private_hosts",
+                format!("entry {entry:?} is not a plain hostname and is ignored"),
+            ));
+        }
+    }
     if cfg.security.allow_dangerous_env_overrides {
         findings.push(Finding::weak(
             "security.allow_dangerous_env_overrides",
@@ -455,6 +473,51 @@ mod tests {
                 && f.name == "security.per_group_token_envs"
                 && f.message.contains("payroll")),
             "expected WEAK finding for unset per-group env var: {:#?}",
+            r.findings,
+        );
+    }
+
+    #[test]
+    fn allowed_private_hosts_keep_production_posture_clean() {
+        // The allowlist is the non-dev way to reach cluster-internal
+        // services: SSRF stays on, so env_safety must not refuse and
+        // doctor lists the hosts as INFO.
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = cfg_with_dsl(&tmp);
+        cfg.security.allowed_private_hosts = vec!["ruuter-internal".into()];
+        assert!(cfg.security.block_private_networks);
+        let r = run(&cfg, Environment::Production);
+        assert!(
+            !r.findings
+                .iter()
+                .any(|f| f.name == "env_safety.posture"
+                    || f.name == "security.block_private_networks"),
+            "allowlist must not trip posture checks: {:#?}",
+            r.findings,
+        );
+        assert!(
+            r.findings.iter().any(|f| f.severity == Severity::Info
+                && f.name == "security.allowed_private_hosts"
+                && f.message.contains("ruuter-internal")),
+            "expected INFO listing the allowlist: {:#?}",
+            r.findings,
+        );
+        assert!(crate::env_safety::posture_checks_for(&cfg)
+            .iter()
+            .all(|c| c.is_safe));
+    }
+
+    #[test]
+    fn allowed_private_hosts_ip_literal_is_weak() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = cfg_with_dsl(&tmp);
+        cfg.security.allowed_private_hosts = vec!["10.0.0.1".into()];
+        let r = run(&cfg, Environment::Dev);
+        assert!(
+            r.findings.iter().any(|f| f.severity == Severity::Weak
+                && f.name == "security.allowed_private_hosts"
+                && f.message.contains("10.0.0.1")),
+            "expected WEAK for an IP-literal entry: {:#?}",
             r.findings,
         );
     }

@@ -499,7 +499,16 @@ Pick one:
 
 Default posture (`security.block_private_networks: true`) refuses
 private / loopback / link-local / ULA targets. If the target is
-legitimately on your private network:
+legitimately on your private network, list its hostname:
+
+```yaml
+security:
+  allowed_private_hosts: [ruuter-internal]   # SSRF guard stays on for everything else
+```
+
+This keeps `block_private_networks: true`, so non-dev `env_safety`
+still boots. Link-local / metadata addresses stay refused even for
+listed hosts. Last resort (dev only — refused at boot elsewhere):
 
 ```yaml
 security:

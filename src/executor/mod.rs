@@ -59,7 +59,8 @@ impl ExecutorBundle {
             http: http::HttpExecutor::with_ssrf_policy(
                 &cfg.limits,
                 cfg.security.block_private_networks,
-            )?,
+            )?
+            .with_allowed_private_hosts(cfg.security.split_allowed_private_hosts().0),
             shell: shell::ShellExecutor::new(cfg),
             history,
             offline_mode: Self::offline_from_env(),

@@ -23,6 +23,9 @@ pub struct HttpExecutor {
     max_response_bytes: usize,
     timeout: Duration,
     block_private_networks: bool,
+    /// Normalised `security.allowed_private_hosts` (lowercase, no
+    /// trailing dot). Shared, read-only.
+    allowed_private_hosts: Arc<[String]>,
 }
 
 /// A single successful attempt.
@@ -59,7 +62,16 @@ impl HttpExecutor {
             max_response_bytes: limits.max_response_bytes,
             timeout,
             block_private_networks,
+            allowed_private_hosts: Arc::from(Vec::new()),
         })
+    }
+
+    /// Hostnames (already normalised via
+    /// `security::normalize_allowed_host`) that may resolve to
+    /// private addresses without tripping the fire-time pre-flight.
+    pub fn with_allowed_private_hosts(mut self, hosts: Vec<String>) -> Self {
+        self.allowed_private_hosts = Arc::from(hosts);
+        self
     }
 
     pub async fn execute(
@@ -160,15 +172,16 @@ impl HttpExecutor {
         let addrs = tokio::net::lookup_host(target.as_str())
             .await
             .map_err(|e| CronManagerError::Internal(format!("dns lookup {target}: {e}")))?;
+        let allowlisted = is_allowlisted(host, &self.allowed_private_hosts);
         for addr in addrs {
-            if crate::security::is_private_or_local(addr.ip()) {
+            if ssrf_refuses(addr.ip(), allowlisted) {
                 tracing::warn!(
                     host = %host,
                     resolved = %addr.ip(),
                     "http: SSRF pre-flight refused fire — hostname resolves to non-routable IP"
                 );
                 return Err(CronManagerError::BadRequest(format!(
-                    "hostname '{host}' resolves to non-routable IP {} (SSRF pre-flight); set security.block_private_networks=false to allow",
+                    "hostname '{host}' resolves to non-routable IP {} (SSRF pre-flight); list the host in security.allowed_private_hosts to allow",
                     addr.ip()
                 )));
             }
@@ -184,6 +197,25 @@ impl HttpExecutor {
         } else {
             CronManagerError::Internal(format!("upstream request: {e}"))
         }
+    }
+}
+
+/// Exact, case-insensitive host match against the normalised
+/// allowlist. The URL crate already lowercases domain hosts; the
+/// trailing dot is the only variant left to fold.
+fn is_allowlisted(host: &str, allowed: &[String]) -> bool {
+    let host = host.trim_end_matches('.');
+    allowed.iter().any(|a| a.eq_ignore_ascii_case(host))
+}
+
+/// Fire-time SSRF verdict for one resolved address. A listed host
+/// may sit on RFC 1918 / ULA / loopback, but never on link-local
+/// or the cloud metadata addresses.
+fn ssrf_refuses(ip: std::net::IpAddr, allowlisted: bool) -> bool {
+    if allowlisted {
+        crate::security::is_always_blocked(ip)
+    } else {
+        crate::security::is_private_or_local(ip)
     }
 }
 
@@ -382,6 +414,92 @@ mod tests {
             msg.contains("SSRF pre-flight") && msg.contains("localhost"),
             "got: {msg}"
         );
+    }
+
+    #[tokio::test]
+    async fn ssrf_pre_flight_allows_allowlisted_private_hostname() {
+        let mut server = mockito::Server::new_async().await;
+        let m = server
+            .mock("POST", "/cron")
+            .with_status(200)
+            .create_async()
+            .await;
+        // mockito binds 127.0.0.1; reach it through the `localhost`
+        // name so the pre-flight actually resolves and checks it.
+        let url = server.url().replace("127.0.0.1", "localhost");
+        let exec = HttpExecutor::with_ssrf_policy(&Limits::default(), true)
+            .unwrap()
+            .with_allowed_private_hosts(vec!["localhost".into()]);
+        let attempt = exec
+            .execute("POST", &format!("{url}/cron"), &[], Arc::new(Notify::new()))
+            .await
+            .unwrap();
+        assert_eq!(attempt.status, 200);
+        m.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn ssrf_pre_flight_refuses_private_hostname_not_on_allowlist() {
+        let exec = HttpExecutor::with_ssrf_policy(&Limits::default(), true)
+            .unwrap()
+            .with_allowed_private_hosts(vec!["ruuter-internal".into()]);
+        let err = exec
+            .execute(
+                "GET",
+                "http://localhost:1/whatever",
+                &[],
+                Arc::new(Notify::new()),
+            )
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("SSRF pre-flight") && msg.contains("allowed_private_hosts"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn allowlist_match_is_exact_and_case_insensitive() {
+        let allowed = vec!["ruuter-internal".to_string()];
+        assert!(is_allowlisted("ruuter-internal", &allowed));
+        assert!(is_allowlisted("Ruuter-Internal.", &allowed));
+        assert!(!is_allowlisted("ruuter-internal.evil.example", &allowed));
+        assert!(!is_allowlisted("xruuter-internal", &allowed));
+        assert!(!is_allowlisted("ruuter-internal", &[]));
+    }
+
+    #[test]
+    fn allowlisted_host_reaches_private_but_never_metadata() {
+        use std::net::IpAddr;
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        // Cluster-internal ranges pass for a listed host…
+        for ok in [
+            "10.1.2.3",
+            "172.18.0.5",
+            "192.168.1.1",
+            "127.0.0.1",
+            "fd12::1",
+            "::1",
+        ] {
+            assert!(!ssrf_refuses(ip(ok), true), "{ok} should pass");
+            assert!(ssrf_refuses(ip(ok), false), "{ok} should fail unlisted");
+        }
+        // …metadata / link-local never do, listed or not.
+        for bad in [
+            "169.254.169.254",
+            "::ffff:169.254.169.254",
+            "fe80::1",
+            "fd00:ec2::254",
+            "0.0.0.0",
+            "224.0.0.1",
+        ] {
+            assert!(ssrf_refuses(ip(bad), true), "{bad} must stay blocked");
+            assert!(ssrf_refuses(ip(bad), false), "{bad} must stay blocked");
+        }
+        // Public addresses are unaffected either way.
+        assert!(!ssrf_refuses(ip("93.184.216.34"), true));
+        assert!(!ssrf_refuses(ip("93.184.216.34"), false));
     }
 
     #[test]

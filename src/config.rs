@@ -261,6 +261,36 @@ pub struct SecurityConfig {
     /// boot and the group falls back to master-only.
     #[serde(default, alias = "perGroupTokenEnvs")]
     pub per_group_token_envs: BTreeMap<String, String>,
+
+    /// Hostnames that HTTP jobs may reach even though they resolve
+    /// to a private / loopback / ULA address, while
+    /// `block_private_networks` stays true for everything else.
+    /// Exact, case-insensitive match against the URL host (no
+    /// wildcards, no IP literals). Link-local / cloud metadata
+    /// addresses stay refused even for listed hosts — see
+    /// `security::is_always_blocked`. Meant for cluster-internal
+    /// targets (`ruuter-internal`, `my-svc.ns.svc.cluster.local`)
+    /// so non-dev deployments don't have to flip the global SSRF
+    /// switch off. Empty (the default) = no change.
+    #[serde(default, alias = "allowedPrivateHosts")]
+    pub allowed_private_hosts: Vec<String>,
+}
+
+impl SecurityConfig {
+    /// Split `allowed_private_hosts` into normalised usable hostnames
+    /// and the raw entries that can never match (see
+    /// `security::normalize_allowed_host`).
+    pub fn split_allowed_private_hosts(&self) -> (Vec<String>, Vec<String>) {
+        let mut valid = Vec::new();
+        let mut invalid = Vec::new();
+        for entry in &self.allowed_private_hosts {
+            match crate::security::normalize_allowed_host(entry) {
+                Some(host) => valid.push(host),
+                None => invalid.push(entry.clone()),
+            }
+        }
+        (valid, invalid)
+    }
 }
 
 impl Default for SecurityConfig {
@@ -278,6 +308,7 @@ impl Default for SecurityConfig {
             expose_jobs_publicly: true,
             expose_running_publicly: true,
             per_group_token_envs: BTreeMap::new(),
+            allowed_private_hosts: Vec::new(),
         }
     }
 }
@@ -500,6 +531,26 @@ impl AppConfig {
             tracing::warn!(
                 "security: block_private_networks=false — HTTP jobs may target link-local (169.254.0.0/16), loopback, private (RFC-1918), or ULA addresses. This re-enables the SSRF lane against cloud metadata endpoints."
             );
+        }
+        if !self.security.allowed_private_hosts.is_empty() {
+            let (valid, invalid) = self.security.split_allowed_private_hosts();
+            tracing::info!(
+                "security: allowed_private_hosts={valid:?} — HTTP jobs may reach these hosts on private addresses (link-local / metadata still refused)"
+            );
+            for entry in invalid {
+                tracing::warn!(
+                    "security: allowed_private_hosts entry {entry:?} is not a plain hostname and is ignored"
+                );
+            }
+            // Operator footgun: if the whole SSRF guard is off, the
+            // allowlist does nothing. Flag it loudly — the operator
+            // most likely wanted the allowlist *instead of* flipping
+            // the guard off, not alongside it.
+            if !self.security.block_private_networks {
+                tracing::warn!(
+                    "security: allowed_private_hosts is set but block_private_networks=false — the allowlist is inert because every private address is already permitted. Remove one or the other."
+                );
+            }
         }
         if self.security.allow_dangerous_env_overrides {
             tracing::warn!(
@@ -870,6 +921,7 @@ mod tests {
         cfg.limits.shell_timeout_secs = 0;
         cfg.security.block_private_networks = false;
         cfg.security.allow_dangerous_env_overrides = true;
+        cfg.security.allowed_private_hosts = vec!["ruuter-internal".into(), "10.0.0.1".into()];
         cfg.admin.trust_network = true;
         cfg.boot_diagnostics();
     }

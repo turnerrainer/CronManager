@@ -51,6 +51,7 @@ database:
 | `admin.bearer_token_env` | env var name | `CRONMANAGER_ADMIN_TOKEN` | Env var containing the bearer token that gates `POST /execute`, `POST /stop`, `POST /reload`. Empty/unset → gate disabled. |
 | `admin.trust_network` | bool | `false` | Skip the boot-time refusal to start on a non-loopback bind without a token. Only safe when a reverse proxy / service mesh authenticates every request before it reaches this process. |
 | `security.block_private_networks` | bool | `true` | Refuse HTTP job URLs whose host is a private / loopback / link-local / ULA IP, both at load (literal IPs) and at fire time (DNS resolution). |
+| `security.allowed_private_hosts` | list of hostnames | `[]` | Hostnames HTTP jobs may reach on private / loopback / ULA addresses while `block_private_networks` stays `true`. Exact, case-insensitive match on the URL host; no wildcards, no IP literals (ignored with a doctor WEAK). Link-local / cloud metadata (`169.254.0.0/16`, `fe80::/10`, `fd00:ec2::254`) stays refused even for listed hosts. Use for cluster-internal targets instead of turning the SSRF guard off. |
 | `security.allow_dangerous_env_overrides` | bool | `false` | Bypass the shell dangerous-env blacklist (`PATH`, `LD_*`, `DYLD_*`, `PYTHONPATH`, `NODE_OPTIONS`, …). |
 | `security.max_query_params` | integer | `64` | Cap on the number of `?k=v` pairs on `POST /execute/…`. Overflow → `413 too_many_query_params`. |
 | `security.max_dsl_file_bytes` | integer | `1048576` (1 MiB) | Per-file cap on YAML DSL size, refused at load with a diagnostic that names the file. |

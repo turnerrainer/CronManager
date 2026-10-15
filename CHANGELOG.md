@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`security.allowed_private_hosts`** — per-hostname exception to the
+  SSRF pre-flight. HTTP jobs whose URL host is listed may resolve to
+  RFC 1918 / loopback / CGNAT / ULA addresses while
+  `block_private_networks` stays `true`, so cluster-internal targets
+  (e.g. `http://ruuter-internal:8080`) work under a non-dev
+  `APP_ENV`. Previously the only option was
+  `block_private_networks: false`, which `env_safety` refuses outside
+  `dev`. Exact, case-insensitive match (trailing dot folded); no
+  wildcards. Link-local and cloud metadata addresses
+  (`169.254.0.0/16`, `fe80::/10`, `fd00:ec2::254`), unspecified,
+  multicast and broadcast stay refused even for listed hosts. IP
+  literals and entries with a scheme / port / path are ignored, with a
+  boot WARN and a doctor WEAK; valid entries show as a doctor INFO.
+  Empty list (the default) = no behaviour change.
+
 ## [0.2.3-alpha] - 2026-10-14
 
 One headline feature + two CI unblockers on top of `0.2.2-alpha`.
