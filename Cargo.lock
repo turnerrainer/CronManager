@@ -273,7 +273,7 @@ dependencies = [
 
 [[package]]
 name = "cronmanager"
-version = "0.2.4-alpha"
+version = "0.3.0-alpha"
 dependencies = [
  "anyhow",
  "async-trait",
