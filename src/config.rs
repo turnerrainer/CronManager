@@ -274,6 +274,21 @@ pub struct SecurityConfig {
     /// switch off. Empty (the default) = no change.
     #[serde(default, alias = "allowedPrivateHosts")]
     pub allowed_private_hosts: Vec<String>,
+
+    /// Opt-out for the FLEET-STRONGHOLDS §11.3 dev-fixture DSL
+    /// gate. When false (the default), a non-dev environment
+    /// (`APP_ENV`/`ENVIRONMENT`/`DEPLOY_ENV` other than
+    /// `dev`/`development`/`local`) refuses to boot if any file
+    /// under `dsl_path` matches a documented dev-fixture pattern
+    /// (`dev-login`, `mock-`, `-mock`, `/test/`, `example-`,
+    /// `-example`, `/dev/`, `/mocks/`). In `dev`, the loader
+    /// still emits a WARN for every match but boot continues.
+    ///
+    /// When true, the pattern check downgrades to WARN in every
+    /// environment. Intended for operators who deliberately ship a
+    /// mock DSL to staging/prod (e.g. a contract-test rig).
+    #[serde(default, alias = "allowDevFixtureDsls")]
+    pub allow_dev_fixture_dsls: bool,
 }
 
 impl SecurityConfig {
@@ -309,6 +324,7 @@ impl Default for SecurityConfig {
             expose_running_publicly: true,
             per_group_token_envs: BTreeMap::new(),
             allowed_private_hosts: Vec::new(),
+            allow_dev_fixture_dsls: false,
         }
     }
 }
@@ -555,6 +571,11 @@ impl AppConfig {
         if self.security.allow_dangerous_env_overrides {
             tracing::warn!(
                 "security: allow_dangerous_env_overrides=true — shell env override blacklist (PATH, LD_*, DYLD_*, PYTHONPATH, NODE_OPTIONS, …) is DISABLED. Any allow-listed dangerous var can be set from /execute query params."
+            );
+        }
+        if self.security.allow_dev_fixture_dsls {
+            tracing::warn!(
+                "security: allow_dev_fixture_dsls=true — the FLEET §11.3 gate that refuses dev/mock/test-fixture DSL files in non-dev environments is DISABLED. Any file matching a documented dev-fixture pattern (dev-login, mock-, -mock, /test/, example-, -example, /dev/, /mocks/) will load with only a WARN, even in staging or production."
             );
         }
         // Recon-endpoint exposure — h2ck.me FN3 / F-CM-1. Default is

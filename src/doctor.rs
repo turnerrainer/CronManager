@@ -304,6 +304,12 @@ pub fn run(cfg: &AppConfig, env: Environment) -> DoctorReport {
             "allow_dangerous_env_overrides=true — PATH / LD_* / PYTHONPATH may be set from /execute query params",
         ));
     }
+    if cfg.security.allow_dev_fixture_dsls {
+        findings.push(Finding::weak(
+            "security.allow_dev_fixture_dsls",
+            "allow_dev_fixture_dsls=true — FLEET §11.3 dev-fixture DSL gate is DISABLED; files matching dev-login / mock- / -mock / /test/ / example- / -example / /dev/ / /mocks/ load with only a WARN",
+        ));
+    }
     if cfg.security.expose_jobs_publicly && admin_token_present {
         findings.push(Finding::weak(
             "security.expose_jobs_publicly",

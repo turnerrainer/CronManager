@@ -63,6 +63,7 @@ database:
 | `security.expose_jobs_publicly` | bool | `true` | When `false`, `GET /jobs`, `/jobs/`, `/jobs/{group}` require the admin bearer token (401 otherwise). Backward-compat default is `true` so an upgrade from `0.1.4-alpha` keeps operator dashboards working; a boot WARN fires when this is left `true` AND a token is configured. |
 | `security.expose_running_publicly` | bool | `true` | Same posture as `expose_jobs_publicly` but for `/running*`. Time-attack signal — flip to `false` for internet-exposed deployments. |
 | `security.per_group_token_envs` | map of `group → env var name` | `{}` | Optional scoped tokens. When populated, requests to `/execute/:group/:job`, `/stop/:group/:job`, `/reload/:group` are accepted with EITHER the master admin token OR the group-specific token (constant-time compare on both). Groups not in the map only accept the master. Values are env var names — the file never contains a raw token. |
+| `security.allow_dev_fixture_dsls` | bool | `false` | Opt-out for the FLEET §11.3 gate that refuses dev-fixture DSL files (`dev-login`, `mock-`, `-mock`, `/test/`, `example-`, `-example`, `/dev/`, `/mocks/`) in non-dev environments. When `true`, matching files load with only a WARN in every environment. |
 
 ### Security posture
 
@@ -138,6 +139,14 @@ environments boot REFUSES when:
 - **Unsafe posture flags are set** — `admin.trust_network=true`,
   `security.block_private_networks=false`, or
   `security.allow_dangerous_env_overrides=true`.
+- **A dev-fixture DSL is present in the `dsl_path` tree** — any
+  file whose path matches `dev-login`, `mock-`, `-mock`,
+  `/test/`, `example-`, `-example`, `/dev/`, or `/mocks/`.
+  The refusal names the file + matched pattern. Set
+  `security.allow_dev_fixture_dsls=true` to downgrade to WARN
+  when a deployment deliberately ships a mock DSL (contract-test
+  rig, staging harness). The shipped `DSL/samples/` tree does
+  NOT trip any of these patterns.
 
 Both refusals emit a multi-line diagnostic naming each failing
 item with a redacted value (`01****ef`) and its remediation. In

@@ -74,6 +74,78 @@ impl Environment {
     }
 }
 
+/// Substring patterns that identify a DSL file as a dev/mock/test
+/// fixture. Case-insensitive, matched against the full path
+/// (POSIX-slash normalised). Cross-fleet patterns from
+/// FLEET-STRONGHOLDS §11.3 — kept intentionally narrow so the
+/// shipped `DSL/samples/` tree still loads.
+///
+/// If a new dev-fixture naming convention surfaces, extend this
+/// list — it is the single source of truth.
+pub const DEV_ONLY_DSL_PATTERNS: &[&str] = &[
+    "dev-login",
+    "mock-",
+    "-mock",
+    "/test/",
+    "example-",
+    "-example",
+    "/dev/",
+    "/mocks/",
+];
+
+/// Return the pattern that matches `path_str` (POSIX-slash
+/// normalised, lowercased) if any. `None` when the path is not a
+/// dev fixture.
+///
+/// Callers should pass the full file path (as would appear in a
+/// log line). Matching is case-insensitive so `MOCK-x.yaml` and
+/// `mock-x.yaml` are treated the same.
+pub fn dev_fixture_pattern(path_str: &str) -> Option<&'static str> {
+    // Normalise Windows separators so tests written on Linux CI
+    // stay portable and a Windows dev doesn't accidentally bypass
+    // the check with backslashes.
+    let normalised = path_str.replace('\\', "/").to_ascii_lowercase();
+    DEV_ONLY_DSL_PATTERNS
+        .iter()
+        .copied()
+        .find(|pat| normalised.contains(pat))
+}
+
+/// Boot-time action to take when a DSL file matches a dev-fixture
+/// pattern. Set by the caller from the detected environment + the
+/// operator opt-out flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DevFixtureAction {
+    /// No gate — permissive default for unit tests and callers
+    /// that don't want the check.
+    Ignore,
+    /// Emit a WARN and continue loading. Used in `Dev` and when
+    /// the operator has explicitly opted out via
+    /// `security.allow_dev_fixture_dsls=true`.
+    Warn,
+    /// Return a fatal load error. Used in every non-dev
+    /// environment unless the operator has opted out.
+    Refuse,
+}
+
+impl DevFixtureAction {
+    /// Compute the correct action from the detected environment
+    /// and the operator opt-out flag.
+    ///
+    /// | env    | allow_dev_fixture_dsls | action |
+    /// |--------|------------------------|--------|
+    /// | Dev    | any                    | Warn   |
+    /// | !Dev   | true                   | Warn   |
+    /// | !Dev   | false                  | Refuse |
+    pub fn from_env(env: Environment, allow_dev_fixture_dsls: bool) -> Self {
+        if !env.requires_prod_creds() || allow_dev_fixture_dsls {
+            Self::Warn
+        } else {
+            Self::Refuse
+        }
+    }
+}
+
 /// Substring patterns that mark a credential as weak.
 /// Case-insensitive match.
 ///
@@ -309,6 +381,12 @@ pub fn posture_checks_for(cfg: &crate::config::AppConfig) -> Vec<PostureCheck> {
             description: "PATH / LD_* / DYLD_* / PYTHONPATH / NODE_OPTIONS can be set from /execute query params",
             fix: "set security.allow_dangerous_env_overrides=false (default)",
         },
+        PostureCheck {
+            name: "security.allow_dev_fixture_dsls",
+            is_safe: !cfg.security.allow_dev_fixture_dsls,
+            description: "FLEET §11.3 — any file under dsl_path matching a dev-fixture pattern (dev-login, mock-, -mock, /test/, example-, -example, /dev/, /mocks/) loads with only a WARN in non-dev environments; otherwise refused",
+            fix: "set security.allow_dev_fixture_dsls=false (default) and rename any dev-fixture files out of dsl_path",
+        },
     ]
 }
 
@@ -456,5 +534,98 @@ mod tests {
             fix: "z",
         }];
         assert!(enforce_posture(Environment::Production, &checks).is_ok());
+    }
+
+    // FLEET-STRONGHOLDS §11.3 — dev-fixture DSL patterns.
+
+    #[test]
+    fn dev_fixture_pattern_matches_documented_families() {
+        // Every listed pattern must fire on a representative path.
+        let cases = [
+            ("/app/DSL/dev-login/session.yaml", "dev-login"),
+            ("/app/DSL/mock-platform/health.yaml", "mock-"),
+            ("/app/DSL/http/staging-mock/probe.yaml", "-mock"),
+            ("/app/DSL/http/test/probe.yaml", "/test/"),
+            ("/app/DSL/example-http/fetch.yaml", "example-"),
+            ("/app/DSL/http/prod-example/fetch.yaml", "-example"),
+            ("/app/DSL/dev/probe.yaml", "/dev/"),
+            ("/app/DSL/mocks/probe.yaml", "/mocks/"),
+        ];
+        for (path, expected) in cases {
+            assert_eq!(
+                dev_fixture_pattern(path),
+                Some(expected),
+                "path {path} should match pattern {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn dev_fixture_pattern_is_case_insensitive() {
+        assert_eq!(
+            dev_fixture_pattern("/app/DSL/MOCK-Foo/x.yaml"),
+            Some("mock-")
+        );
+        assert_eq!(
+            dev_fixture_pattern("/app/DSL/Dev-Login/x.yaml"),
+            Some("dev-login")
+        );
+    }
+
+    #[test]
+    fn dev_fixture_pattern_normalises_windows_separators() {
+        // A Windows dev shouldn't be able to bypass the check by
+        // using backslashes. Normalise to POSIX slashes before match.
+        assert_eq!(
+            dev_fixture_pattern("C:\\app\\DSL\\dev\\probe.yaml"),
+            Some("/dev/")
+        );
+    }
+
+    #[test]
+    fn dev_fixture_pattern_leaves_prod_paths_alone() {
+        // The shipped `DSL/samples/` tree names must NOT trip any
+        // pattern — they use unrelated words like `hello-world`,
+        // `time-bounded`, `manual-trigger`, `post-webhook`.
+        for path in [
+            "/app/DSL/samples/http/health-check.yaml",
+            "/app/DSL/samples/http/post-webhook.yaml",
+            "/app/DSL/samples/http/manual-trigger.yaml",
+            "/app/DSL/samples/http/time-bounded.yaml",
+            "/app/DSL/samples/shell/hello-world.yaml",
+            "/app/DSL/samples/shell/backup.yaml",
+            "/app/DSL/samples/schedules/examples.yaml",
+            "/app/DSL/prod/webhook.yaml",
+        ] {
+            assert_eq!(dev_fixture_pattern(path), None, "path was: {path}");
+        }
+    }
+
+    #[test]
+    fn dev_fixture_action_from_env_matrix() {
+        // Prod + not opted out → refuse.
+        assert_eq!(
+            DevFixtureAction::from_env(Environment::Production, false),
+            DevFixtureAction::Refuse,
+        );
+        // Prod + opted out → warn.
+        assert_eq!(
+            DevFixtureAction::from_env(Environment::Production, true),
+            DevFixtureAction::Warn,
+        );
+        // Staging + not opted out → refuse.
+        assert_eq!(
+            DevFixtureAction::from_env(Environment::Staging, false),
+            DevFixtureAction::Refuse,
+        );
+        // Dev, either way → warn.
+        assert_eq!(
+            DevFixtureAction::from_env(Environment::Dev, false),
+            DevFixtureAction::Warn,
+        );
+        assert_eq!(
+            DevFixtureAction::from_env(Environment::Dev, true),
+            DevFixtureAction::Warn,
+        );
     }
 }
