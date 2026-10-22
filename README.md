@@ -3,7 +3,7 @@
 YAML-driven cron scheduler for HTTP + shell jobs. Rust
 reimplementation of [buerokratt/CronManager](https://github.com/buerokratt/CronManager).
 
-**Version:** 0.2.4-alpha · **License:** Apache-2.0
+**Version:** 0.3.0-alpha · **License:** Apache-2.0
 · **Docs:** [turnerrainer.github.io/cronmanager](https://turnerrainer.github.io/cronmanager/)
 · **Images:** `docker.io/turnerrainer/cronmanager:alpha`, `ghcr.io/turnerrainer/cronmanager:alpha`
 
@@ -34,6 +34,19 @@ docker compose up -d --build
 ```
 
 ## Security posture
+
+`v0.3.0-alpha` adopts **FLEET-STRONGHOLDS §11.3** — the cross-service
+gate against dev-fixture DSLs shipped to non-dev environments (closes
+#54). Any file under `dsl_path` whose path matches a documented
+fixture pattern (`dev-login`, `mock-`, `-mock`, `/test/`, `example-`,
+`-example`, `/dev/`, `/mocks/`) now refuses load under
+`APP_ENV=production`/`staging`/`test`. In `dev`, same files WARN and
+load. The opt-out `security.allow_dev_fixture_dsls: true` downgrades
+everywhere to WARN and is itself treated as unsafe-in-prod by
+env_safety §11.2 + a doctor WEAK. **Potentially breaking** for
+operators with such filenames — migration notes in CLAUDE.md and
+CHANGELOG. 303/303 tests pass (was 289 on 0.2.4-alpha; +14: env_safety
+pattern/action matrix, loader-integration e2e, YAML parse coverage).
 
 `v0.2.4-alpha` adds `security.allowed_private_hosts` on top of
 `v0.2.3-alpha` (closes #49). Per-hostname SSRF exception so
@@ -131,7 +144,8 @@ config in [`CLAUDE.md` § Best-practice configs](./CLAUDE.md#best-practice-confi
   assistant or a new developer landing cold. Covers breaking
   changes since `0.1.0-alpha.3` AND the additional shape /
   posture changes introduced in `0.2.0-alpha` / `0.2.1-alpha` /
-  `0.2.2-alpha` / `0.2.3-alpha` / `0.2.4-alpha`, how to spot a
+  `0.2.2-alpha` / `0.2.3-alpha` / `0.2.4-alpha` / `0.3.0-alpha`,
+  how to spot a
   broken config, how to fix common problems, and best-practice
   config baselines (loopback dev, public/internet, JVM-compat
   port).

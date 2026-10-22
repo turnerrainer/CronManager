@@ -6,7 +6,7 @@ is, which behaviours changed recently, how to spot a broken
 config, how to fix one, and which config shape is the current
 best-practice baseline.
 
-**Current release**: `0.2.4-alpha` (see `VERSION`, `Cargo.toml`,
+**Current release**: `0.3.0-alpha` (see `VERSION`, `Cargo.toml`,
 `CHANGELOG.md`). Branch of record for active work: `dev` — this is
 also the default branch on GitHub. There is no `main` branch yet;
 alphas are cut as git tags on `dev` (`v0.1.4-alpha` → `fe1f517`,
@@ -16,12 +16,15 @@ alphas are cut as git tags on `dev` (`v0.1.4-alpha` → `fe1f517`,
 h2ck.me v1 audit-cycle on top of v0.2.1-alpha, `v0.2.3-alpha` adds
 the HTTP job `headers:` + `headerEnvs:` DSL feature plus two CI
 unblockers, `v0.2.4-alpha` adds `security.allowed_private_hosts`
-so cluster-internal targets work under non-dev `APP_ENV`) and
-published as GitHub Releases (`v0.1.4-alpha` marked Latest /
-stable, `v0.2.1-alpha` + `v0.2.2-alpha` + `v0.2.3-alpha` +
-`v0.2.4-alpha` marked Pre-release). `main` will be created and
-tagged only when the project reaches prod-ready state, targeted
-at `v1.0.0`.
+so cluster-internal targets work under non-dev `APP_ENV`,
+`v0.3.0-alpha` adopts FLEET-STRONGHOLDS §11.3 — refuses
+dev/mock/test-fixture DSL files in non-dev `APP_ENV` — minor
+bump because the default can refuse load for operators with
+fixture-named files) and published as GitHub Releases
+(`v0.1.4-alpha` marked Latest / stable, `v0.2.1-alpha` +
+`v0.2.2-alpha` + `v0.2.3-alpha` + `v0.2.4-alpha` + `v0.3.0-alpha`
+marked Pre-release). `main` will be created and tagged only when
+the project reaches prod-ready state, targeted at `v1.0.0`.
 **Never push a `main` branch or move code there without explicit
 maintainer approval.**
 
@@ -249,6 +252,76 @@ below adds these substrings on top of the `0.1.4-alpha` set:
 |---|---|---|
 | `REFUSING TO START in Production: N weak/default credential(s) detected` | Env-safety §11.1: admin token / DB password matched a weak pattern or is too short. | Rotate the affected env var(s) to a strong value; the error names each redacted (`01****ef`). Or set `APP_ENV=dev` to permit dev defaults locally. |
 | `REFUSING TO START in Production: N unsafe posture item(s)` | Env-safety §11.2: `admin.trust_network=true` / `block_private_networks=false` / `allow_dangerous_env_overrides=true` in a non-dev env. | Flip each named flag to its safe default. |
+
+## Breaking / non-obvious changes in `0.3.0-alpha` (since `0.2.4-alpha`)
+
+One security-posture feature. **Potentially breaking** for
+operators whose `dsl_path` contains files matching a dev-fixture
+pattern — in non-dev `APP_ENV`, those files now refuse to load.
+
+29. **⚠️⚠️ FLEET-STRONGHOLDS §11.3 — dev-fixture DSL gate**
+    (closes #54, PR #55). CronManager adopts the cross-service
+    pattern that refuses dev / mock / test / example DSL files
+    in non-dev environments. The single most common
+    "found in production" pentest finding across the Buerostack
+    fleet (eFTI Gate F-BD-1 `dev-login.yml`, F-BD-7
+    `mock-platform/*.yml`).
+
+    New config field:
+    ```yaml
+    security:
+      allow_dev_fixture_dsls: false   # default; alias allowDevFixtureDsls
+    ```
+
+    **Fixture patterns** (case-insensitive, POSIX-slash
+    normalised substring match against every file path under
+    `dsl_path`, intentionally narrow so the shipped
+    `DSL/samples/` tree walks clean):
+    ```
+    dev-login, mock-, -mock, /test/, example-, -example,
+    /dev/, /mocks/
+    ```
+
+    **Behaviour matrix**:
+
+    | `APP_ENV` | `allow_dev_fixture_dsls` | File matches a pattern → |
+    |---|---|---|
+    | dev / development / local | any | WARN, load continues |
+    | not-dev | true | WARN, load continues (operator opt-in) |
+    | not-dev | false (default) | **Fatal error**, boot refuses |
+
+    The gate is wired through both boot (`main.rs`) and `/reload`
+    (`src/router.rs`) so a mock DSL dropped at runtime is caught
+    too. Pattern match bubbles a fatal error out of the walk —
+    this is a posture violation, not an authoring bug, and does
+    NOT flow through the FN2 skip-and-warn path.
+
+    **Migration — three operator options**:
+
+    1. **Rename** the files out of the pattern list (recommended):
+       `mock-upstream.yaml` → `upstream-stub.yaml`,
+       `dev-login.yaml` → `login.yaml`, move
+       `DSL/test/*.yaml` → `DSL/<group>/*.yaml`.
+    2. **Opt out**: `security.allow_dev_fixture_dsls: true` and
+       accept the doctor WEAK + env_safety §11.2 posture WARN
+       (the opt-out is itself treated as unsafe-in-prod — see
+       item #30 below).
+    3. Set `APP_ENV=dev` (also permits weak credentials — not
+       recommended for staging/prod).
+
+    The shipped `DSL/samples/` tree is pattern-clean —
+    `examples.yaml` is distinct from `example-` which requires a
+    trailing dash.
+
+30. **`allow_dev_fixture_dsls=true` is unsafe-in-prod** (PR #55
+    second commit). `env_safety::posture_checks_for` recognises
+    the opt-out as an unsafe-posture item in the same class as
+    `allow_dangerous_env_overrides=true` and `trust_network=true`.
+    Under `APP_ENV=production`, env_safety §11.2 reports it with
+    the fix "set security.allow_dev_fixture_dsls=false (default)
+    and rename any dev-fixture files out of dsl_path".
+    `cronmanager doctor` lists it as WEAK with the full
+    fixture-pattern list in the message.
 
 ## Breaking / non-obvious changes in `0.2.4-alpha` (since `0.2.3-alpha`)
 

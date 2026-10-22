@@ -8,6 +8,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0-alpha] - 2026-10-22
+
+Minor bump — one feature with a potentially breaking default. 303
+tests pass (was 289 on 0.2.4-alpha; +14 env_safety / loader /
+YAML-parse coverage).
+
+### Added
+
+- **FLEET-STRONGHOLDS §11.3 — dev-fixture DSL gate** (closes #54,
+  via PR #55). CronManager adopts the cross-service pattern that
+  refuses dev / mock / test / example DSL files in non-dev
+  environments. New config field:
+  `security.allow_dev_fixture_dsls: bool` (default `false`, alias
+  `allowDevFixtureDsls`). Case-insensitive, POSIX-slash normalised
+  substring match against every file path under `dsl_path`.
+
+  Fixture patterns (intentionally narrow — the shipped
+  `DSL/samples/` tree walks clean):
+  ```
+  dev-login, mock-, -mock, /test/, example-, -example,
+  /dev/, /mocks/
+  ```
+
+  Behaviour matrix:
+
+  | `APP_ENV` | `allow_dev_fixture_dsls` | File matches a pattern → |
+  |---|---|---|
+  | dev / development / local | any | WARN, load continues |
+  | not-dev | true | WARN, load continues (operator opt-in) |
+  | not-dev | false (default) | **Fatal error**, boot refuses |
+
+  Gate is wired through both boot (`main.rs`) and `/reload`
+  (`src/router.rs`) so a mock DSL dropped at runtime is caught
+  too. The pattern match bubbles a fatal error out of the walk —
+  it is a security-posture violation, not an authoring bug, so
+  it does NOT flow through the FN2 skip-and-warn path.
+
+### Changed
+
+- **BREAKING (operator-visible, config-driven)**: operators whose
+  `dsl_path` contains files matching any fixture pattern will see
+  those files refuse to load after upgrade under non-dev
+  `APP_ENV`. Three resolution paths:
+
+  1. **Rename** the files out of the pattern list (recommended) —
+     `mock-upstream.yaml` → `upstream-stub.yaml`.
+  2. **Opt out** with `security.allow_dev_fixture_dsls: true` and
+     accept the doctor WEAK + env_safety §11.2 posture WARN.
+  3. Set `APP_ENV=dev` (also permits weak credentials — not
+     recommended for staging/prod).
+
+  The gate does not touch deployments where no file matches a
+  pattern. The shipped `DSL/samples/` tree (`hello-world`,
+  `time-bounded`, `manual-trigger`, `post-webhook`, `backup`,
+  `health-check`, `examples`, `manual-script`) is pattern-clean —
+  `examples.yaml` is distinct from `example-` which requires a
+  trailing dash.
+
+- **`env_safety::posture_checks_for` recognises
+  `allow_dev_fixture_dsls=true` as unsafe-in-prod** (same class
+  as `allow_dangerous_env_overrides=true`, `trust_network=true`).
+  Under `APP_ENV=production`, the opt-out trips the §11.2 posture
+  WARN; `cronmanager doctor` lists it as WEAK with the full
+  fixture-pattern list in the message.
+
 ## [0.2.4-alpha] - 2026-10-15
 
 One feature on top of `0.2.3-alpha`. Not required by upgraders;
@@ -689,7 +754,8 @@ per the Buerostack `DEV-REQUIREMENTS.md` ruleset.
   `HANDOFF.md`, `SECURITY.md`, `STANDARDS.md`, `NOTICE`,
   `VERSION`, `deny.toml`, `.cargo/audit.toml`, `book/`, `tasks/`.
 
-[Unreleased]: https://github.com/turnerrainer/cronmanager/compare/v0.2.4-alpha...HEAD
+[Unreleased]: https://github.com/turnerrainer/cronmanager/compare/v0.3.0-alpha...HEAD
+[0.3.0-alpha]: https://github.com/turnerrainer/cronmanager/releases/tag/v0.3.0-alpha
 [0.2.4-alpha]: https://github.com/turnerrainer/cronmanager/releases/tag/v0.2.4-alpha
 [0.2.3-alpha]: https://github.com/turnerrainer/cronmanager/releases/tag/v0.2.3-alpha
 [0.2.2-alpha]: https://github.com/turnerrainer/cronmanager/releases/tag/v0.2.2-alpha
