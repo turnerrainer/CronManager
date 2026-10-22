@@ -381,6 +381,12 @@ pub fn posture_checks_for(cfg: &crate::config::AppConfig) -> Vec<PostureCheck> {
             description: "PATH / LD_* / DYLD_* / PYTHONPATH / NODE_OPTIONS can be set from /execute query params",
             fix: "set security.allow_dangerous_env_overrides=false (default)",
         },
+        PostureCheck {
+            name: "security.allow_dev_fixture_dsls",
+            is_safe: !cfg.security.allow_dev_fixture_dsls,
+            description: "FLEET §11.3 — any file under dsl_path matching a dev-fixture pattern (dev-login, mock-, -mock, /test/, example-, -example, /dev/, /mocks/) loads with only a WARN in non-dev environments; otherwise refused",
+            fix: "set security.allow_dev_fixture_dsls=false (default) and rename any dev-fixture files out of dsl_path",
+        },
     ]
 }
 

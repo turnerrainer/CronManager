@@ -124,6 +124,43 @@ fn config_allowed_private_hosts_singular_typo_rejected() {
     );
 }
 
+#[test]
+fn config_allow_dev_fixture_dsls_snake_case_parses() {
+    let yaml = concat!("security:\n", "  allow_dev_fixture_dsls: true\n");
+    let cfg: AppConfig = serde_yaml_ng::from_str(yaml).unwrap();
+    assert!(cfg.security.allow_dev_fixture_dsls);
+}
+
+#[test]
+fn config_allow_dev_fixture_dsls_camel_case_alias_parses() {
+    // JVM-compat alias.
+    let yaml = concat!("security:\n", "  allowDevFixtureDsls: true\n");
+    let cfg: AppConfig = serde_yaml_ng::from_str(yaml).unwrap();
+    assert!(cfg.security.allow_dev_fixture_dsls);
+}
+
+#[test]
+fn config_allow_dev_fixture_dsls_default_is_false() {
+    // Pins the backward-compat / strict-default promise: operators
+    // must opt in to this loosening; it is never implicit.
+    let cfg: AppConfig = serde_yaml_ng::from_str("port: 8080\n").unwrap();
+    assert!(!cfg.security.allow_dev_fixture_dsls);
+}
+
+#[test]
+fn config_allow_dev_fixture_dsls_typo_rejected() {
+    // Common typo variants an operator might reach for.
+    for bad in [
+        "allow_dev_fixture_dsl",   // singular
+        "allow_dev_fixtures_dsls", // 'fixtures' plural
+        "allow_dev_fixture",       // short form
+    ] {
+        let yaml = format!("security:\n  {bad}: true\n");
+        let err = serde_yaml_ng::from_str::<AppConfig>(&yaml).unwrap_err();
+        assert!(err.to_string().contains(bad), "err for {bad:?}: {err}");
+    }
+}
+
 // ---------- DSL schema ----------
 
 fn write_dsl(root: &std::path::Path, rel: &str, body: &str) {
