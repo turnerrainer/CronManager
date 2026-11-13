@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Fix the red `security` workflow (daily scheduled runs failing since
+  at least 2026-11-05). Three new RustSec advisories hit an unchanged
+  `Cargo.lock`:
+  - `RUSTSEC-2026-0386` (tokio `AsyncFd` I/O-safety unsoundness;
+    failed `cargo audit` and `cargo deny`): `tokio` 1.53.1 → 1.54.1.
+    CronManager does not use `AsyncFd`.
+  - `RUSTSEC-2026-0486` (rustix xattr unsoundness, dev-only via
+    `tempfile`): `rustix` 1.1.4 → 1.1.6.
+  - `RUSTSEC-2026-0459` (`libsqlite3-sys` bundled SQLite CVE): ignored
+    in `.cargo/audit.toml` with rationale + review date. The crate is
+    only in `Cargo.lock` because `sqlx` lists its optional sqlite
+    backend; it is not in the build graph (`cargo tree --target all
+    -e all -i libsqlite3-sys` is empty), and no fixed `sqlx-sqlite`
+    exists (0.8.x and 0.9.0 pin `libsqlite3-sys` < 0.38).
+
 ## [0.3.0-alpha] - 2026-10-22
 
 Minor bump — one feature with a potentially breaking default. 303

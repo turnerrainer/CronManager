@@ -31,6 +31,12 @@ ignore = [
     { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml unmaintained (archived 2024-03-25), via serde_yaml_ng. Upstream advisory: 'No safe upgrade is available'. YAML is read from operator-controlled files only, never over the wire. Review 2027-01-31." },
 ]
 
+# NOTE: RUSTSEC-2026-0459 (libsqlite3-sys, lockfile-only via sqlx's
+# optional sqlite backend) is ignored in .cargo/audit.toml but
+# deliberately NOT listed above: cargo-deny walks the real build
+# graph, never encounters the crate, and would only warn
+# `advisory-not-detected`. See the rationale in .cargo/audit.toml.
+
 # -----------------------------------------------------------------
 # Licenses — allow-list. Anything not listed here fails the build.
 # -----------------------------------------------------------------
