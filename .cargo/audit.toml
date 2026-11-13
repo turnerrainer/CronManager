@@ -60,4 +60,34 @@ ignore = [
     # stabilised or whether `unsafe-libyaml` has been un-archived
     # or forked by a maintained upstream.
     "RUSTSEC-2024-0449",
+
+    # RUSTSEC-2026-0459 — `libsqlite3-sys` bundles a SQLite older than
+    # 3.54.0 (CVE-2026-119375: uninitialised page-cache memory can be
+    # returned when a DB is opened together with a `-wal` file whose
+    # page size differs). Fix is `libsqlite3-sys >= 0.39.0`.
+    #
+    # Why this is a lockfile-only finding:
+    #   * `Cargo.lock` lists `libsqlite3-sys 0.30.1` solely because
+    #     `sqlx` declares optional `sqlx-sqlite` / `sqlx-mysql`
+    #     dependencies; cargo records every optional dependency of
+    #     the resolve in the lockfile, enabled or not.
+    #   * CronManager enables only `sqlx`'s `postgres` backend (see
+    #     `Cargo.toml`). `cargo tree --target all -e all -i
+    #     libsqlite3-sys` prints "nothing to print": the crate is not
+    #     in the build graph for any target or feature, is never
+    #     compiled or linked, and CronManager never opens a SQLite
+    #     file. `cargo deny check advisories` (which walks the real
+    #     graph) agrees and does not report it.
+    #   * No upgrade is possible from our side: `sqlx-sqlite` 0.8.x
+    #     and 0.9.0 both pin `libsqlite3-sys` below 0.38.
+    #
+    # NOT mirrored in `deny.toml`: cargo-deny never encounters the
+    # advisory, so an ignore entry there would only emit an
+    # `advisory-not-detected` warning.
+    #
+    # Review: 2027-01-31 — drop this entry once sqlx ships a release
+    # that allows `libsqlite3-sys >= 0.39`, or if `sqlx` is ever
+    # configured with a sqlite backend (then it is a real exposure
+    # and must be fixed, not ignored).
+    "RUSTSEC-2026-0459",
 ]
