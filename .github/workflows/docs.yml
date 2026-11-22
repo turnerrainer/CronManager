@@ -8,15 +8,13 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: pages
   cancel-in-progress: false
 
 jobs:
-  build-deploy:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -48,5 +46,20 @@ jobs:
           # linkcheck writes reports under book/book/linkcheck/;
           # only html/ is the site.
           path: book/book/html
+
+  # Deploy runs as its own job (the shape GitHub documents). When the
+  # upload and deploy steps shared one job, deploy-pages intermittently
+  # listed 0 artifacts for the run right after the upload.
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - name: Deploy to GitHub Pages
+        id: deployment
         uses: actions/deploy-pages@v5
