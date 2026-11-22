@@ -90,4 +90,27 @@ ignore = [
     # configured with a sqlite backend (then it is a real exposure
     # and must be fixed, not ignored).
     "RUSTSEC-2026-0459",
+
+    # RUSTSEC-2026-0543 — `chrono` is flagged unmaintained (all
+    # versions affected, `patched = []`). Informational advisory, no
+    # CVE or exploit attached; `cargo audit --deny warnings`
+    # promotes it to a hard-fail by policy.
+    #
+    # Why it cannot be removed from our side:
+    #   * It is a transitive dependency of `cron` 0.13 (the schedule
+    #     parser) and of `sqlx-core` / `sqlx-postgres` 0.8.x, in
+    #     addition to our direct use. Dropping the direct use alone
+    #     would not take it out of the graph.
+    #   * Migrating means replacing the `cron` crate and waiting for
+    #     sqlx to move to `time`/`jiff`; neither is an audit-cycle fix.
+    #
+    # Exposure: chrono is used for date arithmetic on trusted,
+    # locally generated timestamps and schedule expressions from
+    # operator-controlled DSL files. No untrusted input is parsed
+    # by chrono over the wire.
+    #
+    # Review: 2027-01-31 — check whether `cron` and `sqlx` have
+    # moved off chrono, or whether chrono has a new maintainer;
+    # then drop this entry.
+    "RUSTSEC-2026-0543",
 ]
